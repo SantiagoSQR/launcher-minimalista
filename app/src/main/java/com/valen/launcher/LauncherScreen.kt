@@ -33,11 +33,12 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
-private enum class Screen { Home, Drawer, Settings, Favorites, App }
+private enum class Screen { Home, Drawer, Settings, Favorites, App, Wait, Progression }
 
 @Composable
 fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int, chooseHome: () -> Unit) {
     val apps by model.apps.collectAsState()
+    val attempt by model.interruption.collectAsState()
     val preferences by model.preferences.collectAsState()
     val ink = if (preferences?.get(colorKey) == "black") Color.Black else Color.White
     val panel = if (ink == Color.Black) Color.White else Color(0xff101010)
@@ -54,24 +55,36 @@ fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int,
         favoriteIds.mapNotNull(byId::get)
     }
     fun title(app: App) = preferences?.get(app.alias)?.ifBlank { app.label } ?: app.label
+    fun failed() {
+        Toast.makeText(context, "No se pudo abrir la aplicación", Toast.LENGTH_SHORT).show()
+    }
+    fun cancel() {
+        model.cancelInterruption()
+        screen = Screen.Home
+        query = ""
+    }
     fun open(app: App) {
         screen = Screen.Home
         query = ""
         keyboard?.hide()
-        if (!model.launch(app)) Toast.makeText(context, "No se pudo abrir la aplicación", Toast.LENGTH_SHORT).show()
+        if (preferences?.get(app.restricted) == "on") {
+            selected = app
+            screen = Screen.Wait
+            model.requestInterruption(app)
+        } else if (!model.launch(app)) failed()
     }
     fun configure(app: App) {
         selected = app
         alias = preferences?.get(app.alias).orEmpty()
         screen = Screen.App
     }
-    LaunchedEffect(homeRequest) {
-        screen = Screen.Home
-        query = ""
-    }
+    LaunchedEffect(homeRequest) { cancel() }
     BackHandler(screen != Screen.Home) {
-        screen = if (screen == Screen.Favorites || screen == Screen.App) Screen.Settings else Screen.Home
-        query = ""
+        if (screen == Screen.Wait) cancel()
+        else {
+            screen = if (screen in listOf(Screen.Favorites, Screen.App, Screen.Progression)) Screen.Settings else Screen.Home
+            query = ""
+        }
     }
 
     val focus = remember { FocusRequester() }
@@ -138,6 +151,7 @@ fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int,
             Screen.Settings -> LazyColumn(Modifier.padding(horizontal = 24.dp)) {
                 item {
                     BasicText("Ajustes", style = tone.copy(fontSize = 28.sp))
+                    Action("Demoras progresivas", tone) { screen = Screen.Progression }
                     Action("Ordenar favoritos", tone) { screen = Screen.Favorites }
                     Action(if (auto) "Apertura automática activada" else "Apertura automática desactivada", tone) {
                         model.save(autoKey, if (auto) "off" else "on")
@@ -158,8 +172,35 @@ fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int,
                         keyboard?.hide()
                         screen = Screen.Settings
                     }
+                    val restricted = preferences?.get(app.restricted) == "on"
+                    Action(if (restricted) "Interrupción activada" else "Interrupción desactivada", tone) {
+                        model.save(app.restricted, if (restricted) "off" else "on")
+                    }
                     Action(if (app.id in favoriteIds) "Quitar de favoritos" else "Añadir a favoritos", tone) {
                         model.toggleFavorite(app.id)
+                    }
+                }
+            }
+            Screen.Wait -> WaitPanel(selected?.let(::title).orEmpty(), attempt?.deadline, tone, {
+                model.completeInterruption()?.let { opened ->
+                    screen = Screen.Home
+                    if (!opened) failed()
+                }
+            }, ::cancel)
+            Screen.Progression -> {
+                var value by remember { mutableStateOf(preferences?.get(progressionKey) ?: defaultProgression.joinToString(", ")) }
+                Column(Modifier.padding(horizontal = 24.dp)) {
+                    BasicText("Demoras en segundos", style = tone.copy(fontSize = 28.sp))
+                    BasicText("Separá los valores con comas", style = tone)
+                    Input(value, { value = it }, "5, 10, 20, 30, 45, 60", tone)
+                    Action("Guardar demoras", tone) {
+                        val delays = parseDelays(value)
+                        if (delays == null) Toast.makeText(context, "Ingresá uno o más enteros no negativos", Toast.LENGTH_SHORT).show()
+                        else {
+                            model.save(progressionKey, delays.joinToString(", "))
+                            keyboard?.hide()
+                            screen = Screen.Settings
+                        }
                     }
                 }
             }

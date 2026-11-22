@@ -9,6 +9,8 @@ import kotlinx.coroutines.Job
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.room.Room
+import java.time.LocalDate
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -25,11 +27,13 @@ private val Application.preferences by preferencesDataStore("launcher")
 
 data class App(val component: ComponentName, val label: String) {
     val id get() = component.flattenToString()
+    val restricted get() = stringPreferencesKey("restricted:$id")
     val alias get() = stringPreferencesKey("alias:$id")
 }
 
 val favoritesKey = stringPreferencesKey("favorites")
 val colorKey = stringPreferencesKey("color")
+val progressionKey = stringPreferencesKey("progression")
 val autoKey = stringPreferencesKey("auto")
 
 fun decodeFavorites(value: String?): List<String> {
@@ -42,6 +46,13 @@ fun searchKey(value: String): String =
         .replace(Regex("\\p{M}+"), "").lowercase(Locale.ROOT)
 
 class LauncherModel(private val app: Application) : AndroidViewModel(app) {
+    private val database = Room.databaseBuilder(app, LauncherDatabase::class.java, "launcher.db").build()
+    private val history = database.history()
+    private val pending = MutableStateFlow<Interruption?>(null)
+    val interruption = pending.asStateFlow()
+    private var lookup: Job? = null
+    private var lastWrite: Job? = null
+
     private val launcher = app.getSystemService(LauncherApps::class.java)
     private val installed = MutableStateFlow(emptyList<App>())
     val apps = installed.asStateFlow()
@@ -73,7 +84,49 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun launch(target: App): Boolean = try {
+    fun requestInterruption(target: App) {
+        lookup?.cancel()
+        val delays = preferences.value?.get(progressionKey)?.let(::parseDelays) ?: defaultProgression
+        lookup = viewModelScope.launch {
+            lastWrite?.join()
+            val count = history.openingCount(LocalDate.now().toString(), target.id)
+            pending.value = Interruption(target, delays[count.coerceAtMost(delays.lastIndex)], System.currentTimeMillis())
+        }
+    }
+
+    fun cancelInterruption() {
+        lookup?.cancel()
+        val attempt = pending.value ?: return
+        pending.value = null
+        record(attempt.app, "cancelled", attempt)
+    }
+
+    fun completeInterruption(): Boolean? {
+        val attempt = pending.value ?: return null
+        if (android.os.SystemClock.elapsedRealtime() < attempt.deadline) return null
+        pending.value = null
+        return launch(attempt.app, attempt)
+    }
+
+    private fun record(target: App, outcome: String, attempt: Interruption?) {
+        val event = LaunchEvent(
+            target.id, target.label, LocalDate.now().toString(),
+            attempt?.timestamp ?: System.currentTimeMillis(), outcome, attempt?.seconds
+        )
+        val previousWrite = lastWrite
+        lastWrite = viewModelScope.launch {
+            previousWrite?.join()
+            history.record(event)
+        }
+    }
+
+    fun launch(target: App, attempt: Interruption? = null): Boolean {
+        val opened = start(target)
+        if (opened || attempt != null) record(target, if (opened) "opened" else "failed", attempt)
+        return opened
+    }
+
+    private fun start(target: App): Boolean = try {
         launcher.startMainActivity(target.component, Process.myUserHandle(), null, null)
         true
     } catch (_: android.content.ActivityNotFoundException) {

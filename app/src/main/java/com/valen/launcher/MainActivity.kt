@@ -44,6 +44,12 @@ class MainActivity : ComponentActivity() {
         model.refresh()
     }
 
+    override fun onStop() {
+        model.cancelInterruption()
+        homeRequest++
+        super.onStop()
+    }
+
     private fun refreshHomeRole() {
         isDefaultHome = roles.isRoleHeld(RoleManager.ROLE_HOME)
     }
