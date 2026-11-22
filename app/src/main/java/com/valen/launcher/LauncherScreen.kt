@@ -1,0 +1,230 @@
+package com.valen.launcher
+
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import org.json.JSONArray
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+
+private enum class Screen { Home, Drawer, Settings, Favorites, App }
+
+@Composable
+fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int, chooseHome: () -> Unit) {
+    val apps by model.apps.collectAsState()
+    val preferences by model.preferences.collectAsState()
+    val ink = if (preferences?.get(colorKey) == "black") Color.Black else Color.White
+    val panel = if (ink == Color.Black) Color.White else Color(0xff101010)
+    val tone = TextStyle(color = ink, fontSize = 18.sp)
+    val context = LocalContext.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    var screen by remember { mutableStateOf(Screen.Home) }
+    var query by remember { mutableStateOf("") }
+    var selected by remember { mutableStateOf<App?>(null) }
+    var alias by remember { mutableStateOf("") }
+    val favoriteIds = remember(preferences) { decodeFavorites(preferences?.get(favoritesKey)) }
+    val favorites = remember(apps, favoriteIds) {
+        val byId = apps.associateBy { it.id }
+        favoriteIds.mapNotNull(byId::get)
+    }
+    fun title(app: App) = preferences?.get(app.alias)?.ifBlank { app.label } ?: app.label
+    fun open(app: App) {
+        screen = Screen.Home
+        query = ""
+        keyboard?.hide()
+        if (!model.launch(app)) Toast.makeText(context, "No se pudo abrir la aplicación", Toast.LENGTH_SHORT).show()
+    }
+    fun configure(app: App) {
+        selected = app
+        alias = preferences?.get(app.alias).orEmpty()
+        screen = Screen.App
+    }
+    LaunchedEffect(homeRequest) {
+        screen = Screen.Home
+        query = ""
+    }
+    BackHandler(screen != Screen.Home) {
+        screen = if (screen == Screen.Favorites || screen == Screen.App) Screen.Settings else Screen.Home
+        query = ""
+    }
+
+    val focus = remember { FocusRequester() }
+    val normalized = remember(query) { searchKey(query.trim()) }
+    val results = remember(normalized, apps, preferences) {
+        apps.filter { normalized in searchKey(it.label) || normalized in searchKey(title(it)) }
+    }
+    val sole = results.singleOrNull()
+    val auto = preferences?.get(autoKey) != "off"
+    LaunchedEffect(screen, query, sole, auto) {
+        if (screen == Screen.Drawer && auto && normalized.isNotEmpty() && sole != null) {
+            delay(500)
+            open(sole)
+        }
+    }
+    LaunchedEffect(screen) {
+        if (screen == Screen.Drawer) {
+            focus.requestFocus()
+            keyboard?.show()
+        }
+    }
+
+    val background = if (screen == Screen.Home) Modifier else Modifier.background(panel)
+    Box(Modifier.fillMaxSize().then(background).safeDrawingPadding().imePadding()) {
+        when (screen) {
+            Screen.Home -> {
+                val contextLocale = context.resources.configuration.locales[0]
+                var now by remember { mutableStateOf(ZonedDateTime.now()) }
+                LaunchedEffect(Unit) {
+                    while (true) {
+                        now = ZonedDateTime.now()
+                        delay(60_000L - now.second * 1000L - now.nano / 1_000_000L)
+                    }
+                }
+                BoxWithConstraints(
+                    Modifier.fillMaxSize()
+                        .pointerInput(Unit) { detectTapGestures(onLongPress = { screen = Screen.Settings }) }
+                        .pointerInput(Unit) {
+                            var distance = 0f
+                            detectVerticalDragGestures(
+                                onDragStart = { distance = 0f },
+                                onDragEnd = { if (distance < -56.dp.toPx()) screen = Screen.Drawer }
+                            ) { _, delta -> distance += delta }
+                        },
+                    contentAlignment = Alignment.TopCenter
+                ) {
+                    Column(Modifier.padding(top = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        BasicText(now.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(contextLocale)), style = tone.copy(fontSize = 58.sp))
+                        BasicText(now.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(contextLocale)), style = tone)
+                        if (!defaultHome) Action(stringResource(R.string.choose_home), tone, chooseHome)
+                    }
+                    if (favorites.isNotEmpty()) {
+                        LazyColumn(
+                            Modifier.align(Alignment.BottomCenter).heightIn(max = maxHeight * 0.55f).padding(bottom = 24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) { items(favorites, key = { it.id }) { Action(title(it), tone) { open(it) } } }
+                    }
+                }
+            }
+            Screen.Drawer -> Column(Modifier.padding(horizontal = 24.dp)) {
+                Input(query, { query = it }, "Buscar aplicaciones", tone, Modifier.focusRequester(focus))
+                LazyColumn { items(results, key = { it.id }) { Action(title(it), tone) { open(it) } } }
+            }
+            Screen.Settings -> LazyColumn(Modifier.padding(horizontal = 24.dp)) {
+                item {
+                    BasicText("Ajustes", style = tone.copy(fontSize = 28.sp))
+                    Action("Ordenar favoritos", tone) { screen = Screen.Favorites }
+                    Action(if (auto) "Apertura automática activada" else "Apertura automática desactivada", tone) {
+                        model.save(autoKey, if (auto) "off" else "on")
+                    }
+                    Action(if (ink == Color.White) "Texto blanco" else "Texto negro", tone) {
+                        model.save(colorKey, if (ink == Color.White) "black" else "white")
+                    }
+                    if (!defaultHome) Action(stringResource(R.string.choose_home), tone, chooseHome)
+                }
+                items(apps, key = { it.id }) { Action(title(it), tone) { configure(it) } }
+            }
+            Screen.App -> selected?.let { app ->
+                Column(Modifier.padding(horizontal = 24.dp)) {
+                    BasicText(app.label, style = tone.copy(fontSize = 28.sp))
+                    Input(alias, { alias = it }, "Alias", tone)
+                    Action("Guardar alias", tone) {
+                        model.save(app.alias, alias.trim())
+                        keyboard?.hide()
+                        screen = Screen.Settings
+                    }
+                    Action(if (app.id in favoriteIds) "Quitar de favoritos" else "Añadir a favoritos", tone) {
+                        model.toggleFavorite(app.id)
+                    }
+                }
+            }
+            Screen.Favorites -> Favorites(favorites, ::title, tone) {
+                val current = it.map(App::id)
+                model.save(favoritesKey, JSONArray(current + favoriteIds.filterNot { id -> favorites.any { app -> app.id == id } }).toString())
+            }
+        }
+    }
+}
+
+@Composable
+private fun Favorites(apps: List<App>, title: (App) -> String, style: TextStyle, save: (List<App>) -> Unit) {
+    var order by remember(apps) { mutableStateOf(apps) }
+    val state = rememberLazyListState()
+    val latestSave by rememberUpdatedState(save)
+    LazyColumn(Modifier.padding(horizontal = 24.dp), state = state) {
+        item { BasicText("Arrastrá para ordenar", style = style) }
+        items(order, key = { it.id }) { app ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                BasicText(title(app), Modifier.weight(1f).padding(vertical = 14.dp), style = style)
+                BasicText(
+                    "↕",
+                    Modifier.pointerInput(app.id) {
+                        var center = 0f
+                        detectDragGestures(
+                            onDragStart = {
+                                val item = state.layoutInfo.visibleItemsInfo.firstOrNull { it.key == app.id }
+                                center = item?.let { row -> row.offset + row.size / 2f } ?: 0f
+                            },
+                            onDragEnd = { latestSave(order) },
+                            onDragCancel = { order = apps }
+                        ) { change, amount ->
+                            change.consume()
+                            center += amount.y
+                            val target = state.layoutInfo.visibleItemsInfo.firstOrNull {
+                                center >= it.offset && center < it.offset + it.size && it.key is String
+                            }
+                            val from = order.indexOf(app)
+                            val to = order.indexOfFirst { it.id == target?.key }
+                            if (from >= 0 && to >= 0 && from != to) {
+                                order = order.toMutableList().apply { add(to, removeAt(from)) }
+                            }
+                        }
+                    }.padding(16.dp),
+                    style = style
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun Action(label: String, style: TextStyle, action: () -> Unit) {
+    BasicText(label, Modifier.clickable(onClick = action).padding(vertical = 12.dp, horizontal = 8.dp)
+        .heightIn(min = 24.dp), style = style)
+}
+
+@Composable
+internal fun Input(value: String, change: (String) -> Unit, hint: String, style: TextStyle, modifier: Modifier = Modifier) {
+    BasicTextField(value, change, modifier.fillMaxWidth().padding(vertical = 16.dp), singleLine = true,
+        textStyle = style, cursorBrush = SolidColor(style.color), decorationBox = { field ->
+            Box {
+                if (value.isEmpty()) BasicText(hint, style = style.copy(color = style.color.copy(alpha = 0.65f)))
+                field()
+            }
+        })
+}

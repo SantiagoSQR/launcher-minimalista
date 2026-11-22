@@ -23,4 +23,6 @@ android {
 dependencies {
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.compose.foundation:foundation:1.12.1")
+    implementation("androidx.datastore:datastore-preferences:1.2.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.10.0")
 }
