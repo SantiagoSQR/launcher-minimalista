@@ -9,7 +9,12 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onLongClick
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.semantics.semantics
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -31,6 +36,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
@@ -60,7 +66,9 @@ fun LauncherScreen(
     val tone = TextStyle(color = ink, fontSize = 18.sp)
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     var screen by remember { mutableStateOf(Screen.Home) }
+    var statsFromSettings by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var selected by remember { mutableStateOf<App?>(null) }
     var hiddenDeadline by remember { mutableLongStateOf(0) }
@@ -80,10 +88,13 @@ fun LauncherScreen(
         query = ""
     }
     fun open(app: App) {
+        val data = preferences ?: return
+        val hidden = data[app.hidden] == "on"
+        if (hidden && screen != Screen.Hidden) return
         screen = Screen.Home
         query = ""
         keyboard?.hide()
-        if (preferences?.get(app.restricted) == "on" || preferences?.get(app.hidden) == "on") {
+        if (data[app.restricted] == "on" || hidden) {
             selected = app
             screen = Screen.Wait
             model.requestInterruption(app)
@@ -99,24 +110,33 @@ fun LauncherScreen(
     BackHandler(screen != Screen.Home) {
         if (screen == Screen.Wait) cancel()
         else {
-            screen = if (screen in listOf(Screen.Favorites, Screen.App, Screen.Progression, Screen.HiddenGate, Screen.Hidden)) Screen.Settings else Screen.Home
+            screen = when (screen) {
+                Screen.Favorites, Screen.App, Screen.Progression, Screen.HiddenGate, Screen.Hidden -> Screen.Settings
+                Screen.Stats -> if (statsFromSettings) Screen.Settings else Screen.Home
+                else -> Screen.Home
+            }
             query = ""
         }
     }
 
     val focus = remember { FocusRequester() }
     val normalized = remember(query) { searchKey(query.trim()) }
-    val results = remember(normalized, apps, preferences) {
-        apps.filter {
-            preferences?.get(it.hidden) != "on" && (normalized in searchKey(it.label) || normalized in searchKey(title(it)))
-        }
+    val searchIndex = remember(apps, preferences) {
+        if (preferences == null) emptyList()
+        else apps.filter { preferences?.get(it.hidden) != "on" }
+            .map { Triple(it, searchKey(it.label), searchKey(title(it))) }
+    }
+    val results = remember(normalized, searchIndex) {
+        searchIndex.filter { (_, original, shown) -> normalized in original || normalized in shown }.map { it.first }
     }
     val sole = results.singleOrNull()
     val auto = preferences?.get(autoKey) != "off"
     LaunchedEffect(screen, query, sole, auto) {
         if (screen == Screen.Drawer && auto && normalized.isNotEmpty() && sole != null) {
-            delay(500)
-            open(sole)
+            lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                delay(500)
+                open(sole)
+            }
         }
     }
     LaunchedEffect(screen) {
@@ -130,14 +150,16 @@ fun LauncherScreen(
     Box(Modifier.fillMaxSize().then(background).safeDrawingPadding().imePadding()) {
         when (screen) {
             Screen.Home -> {
-                val contextLocale = context.resources.configuration.locales[0]
+                val contextLocale = LocalConfiguration.current.locales[0]
                 var now by remember { mutableStateOf(ZonedDateTime.now()) }
                 val day = now.toLocalDate()
                 LaunchedEffect(day) { model.refreshUsage() }
-                LaunchedEffect(Unit) {
-                    while (true) {
-                        now = ZonedDateTime.now()
-                        delay(60_000L - now.second * 1000L - now.nano / 1_000_000L)
+                LaunchedEffect(lifecycle) {
+                    lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                        while (true) {
+                            now = ZonedDateTime.now()
+                            delay(60_000L - now.second * 1000L - now.nano / 1_000_000L)
+                        }
                     }
                 }
                 BoxWithConstraints(
@@ -164,7 +186,10 @@ fun LauncherScreen(
                         val openings = dailyActivity.filter { it.day == day.toString() }.sumOf { it.openings }
                         val estimate = usage?.get(day.toString())?.let(::usageText)
                         val summary = (estimate?.let { "$it de uso estimado" } ?: "Uso no disponible") + " · $openings aperturas"
-                        Action(summary, tone.copy(fontSize = 13.sp)) { screen = Screen.Stats }
+                        Action(summary, tone.copy(fontSize = 13.sp)) {
+                            statsFromSettings = false
+                            screen = Screen.Stats
+                        }
                         if (!defaultHome) Action(stringResource(R.string.choose_home), tone, chooseHome)
                     }
                     if (favorites.isNotEmpty()) {
@@ -187,7 +212,10 @@ fun LauncherScreen(
                         hiddenDeadline = SystemClock.elapsedRealtime() + seconds * 1000L
                         screen = Screen.HiddenGate
                     }
-                    Action("Estadísticas", tone) { screen = Screen.Stats }
+                    Action("Estadísticas", tone) {
+                        statsFromSettings = true
+                        screen = Screen.Stats
+                    }
                     Action("Demoras progresivas", tone) { screen = Screen.Progression }
                     Action("Ordenar favoritos", tone) { screen = Screen.Favorites }
                     Action(if (auto) "Apertura automática activada" else "Apertura automática desactivada", tone) {
@@ -323,13 +351,13 @@ private fun Favorites(apps: List<App>, title: (App) -> String, style: TextStyle,
 
 @Composable
 internal fun Action(label: String, style: TextStyle, action: () -> Unit) {
-    BasicText(label, Modifier.clickable(onClick = action).padding(vertical = 12.dp, horizontal = 8.dp)
+    BasicText(label, Modifier.clickable(role = Role.Button, onClick = action).padding(vertical = 12.dp, horizontal = 8.dp)
         .heightIn(min = 24.dp), style = style)
 }
 
 @Composable
 internal fun Input(value: String, change: (String) -> Unit, hint: String, style: TextStyle, modifier: Modifier = Modifier) {
-    BasicTextField(value, change, modifier.fillMaxWidth().padding(vertical = 16.dp), singleLine = true,
+    BasicTextField(value, change, modifier.fillMaxWidth().semantics { contentDescription = hint }.padding(vertical = 16.dp), singleLine = true,
         textStyle = style, cursorBrush = SolidColor(style.color), decorationBox = { field ->
             Box {
                 if (value.isEmpty()) BasicText(hint, style = style.copy(color = style.color.copy(alpha = 0.65f)))

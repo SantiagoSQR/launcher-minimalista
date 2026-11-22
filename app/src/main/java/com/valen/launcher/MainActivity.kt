@@ -122,6 +122,11 @@ class MainActivity : ComponentActivity() {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
+    override fun onPause() {
+        if (model.cancelInterruption()) homeRequest++
+        super.onPause()
+    }
+
     override fun onStop() {
         model.cancelInterruption()
         if (widgetId == null) homeRequest++

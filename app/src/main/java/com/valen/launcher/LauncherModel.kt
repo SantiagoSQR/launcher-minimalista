@@ -22,6 +22,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import java.text.Normalizer
@@ -54,7 +56,8 @@ fun searchKey(value: String): String =
 
 class LauncherModel(private val app: Application) : AndroidViewModel(app) {
     private val database = Room.databaseBuilder(app, LauncherDatabase::class.java, "launcher.db")
-        .addMigrations(addWidgets).build()
+        .addMigrations(addWidgets, addInterruptionStart).build()
+    private val widgetPolicy = Mutex()
     private val widgetDao = database.widgets()
     val widgets = widgetDao.observe().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val widgetManager: AppWidgetManager = AppWidgetManager.getInstance(app)
@@ -66,10 +69,12 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
 
     fun cleanWidgets(pendingId: Int?) {
         viewModelScope.launch {
-            val existing = widgetDao.all().map { it.id }.toSet()
-            val ids = widgetHost.appWidgetIds.toSet()
-            (existing - ids).forEach { widgetDao.remove(it) }
-            (ids - existing - setOfNotNull(pendingId)).forEach(widgetHost::deleteAppWidgetId)
+            widgetPolicy.withLock {
+                val existing = widgetDao.all().map { it.id }.toSet()
+                val ids = widgetHost.appWidgetIds.toSet()
+                (existing - ids).forEach { widgetDao.remove(it) }
+                (ids - existing - setOfNotNull(pendingId)).forEach(widgetHost::deleteAppWidgetId)
+            }
         }
     }
 
@@ -77,32 +82,34 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
 
     fun addWidget(id: Int, cellWidth: Float, rejected: () -> Unit) {
         viewModelScope.launch {
-            val info = widgetManager.getAppWidgetInfo(id)
-            val hidden = info != null && app.preferences.data.first()[hiddenKey(info.provider.packageName)] == "on"
-            if (info == null || hidden) {
-                widgetHost.deleteAppWidgetId(id)
-                rejected()
-                return@launch
-            }
-            val density = app.resources.displayMetrics.density
-            val bounds = widgetBounds(info, cellWidth, density)
-            if (bounds.minColumns > bounds.maxColumns) {
-                widgetHost.deleteAppWidgetId(id)
-                rejected()
-                return@launch
-            }
-            val width = (info.targetCellWidth.takeIf { it > 0 }
-                ?: kotlin.math.ceil(info.minWidth / density / cellWidth).toInt()).coerceIn(bounds.minColumns, bounds.maxColumns)
-            val height = (info.targetCellHeight.takeIf { it > 0 }
-                ?: kotlin.math.ceil(info.minHeight / density / widgetRowDp).toInt()).coerceIn(bounds.minRows, bounds.maxRows)
-            database.withTransaction {
-                val current = widgetDao.all()
-                val template = Widget(id, info.provider.flattenToString(), 0, 0, width, height)
-                val lastRow = current.maxOfOrNull { it.y + it.rows } ?: 0
-                val placed = (0..lastRow).asSequence().flatMap { row ->
-                    (0..4 - width).asSequence().map { col -> template.copy(x = col, y = row) }
-                }.first { next -> current.none(next::overlaps) }
-                widgetDao.save(placed)
+            widgetPolicy.withLock {
+                val info = widgetManager.getAppWidgetInfo(id)
+                val hidden = info != null && app.preferences.data.first()[hiddenKey(info.provider.packageName)] == "on"
+                if (info == null || hidden) {
+                    widgetHost.deleteAppWidgetId(id)
+                    rejected()
+                    return@withLock
+                }
+                val density = app.resources.displayMetrics.density
+                val bounds = widgetBounds(info, cellWidth, density)
+                if (bounds.minColumns > bounds.maxColumns) {
+                    widgetHost.deleteAppWidgetId(id)
+                    rejected()
+                    return@withLock
+                }
+                val width = (info.targetCellWidth.takeIf { it > 0 }
+                    ?: kotlin.math.ceil(info.minWidth / density / cellWidth).toInt()).coerceIn(bounds.minColumns, bounds.maxColumns)
+                val height = (info.targetCellHeight.takeIf { it > 0 }
+                    ?: kotlin.math.ceil(info.minHeight / density / widgetRowDp).toInt()).coerceIn(bounds.minRows, bounds.maxRows)
+                database.withTransaction {
+                    val current = widgetDao.all()
+                    val template = Widget(id, info.provider.flattenToString(), 0, 0, width, height)
+                    val lastRow = current.maxOfOrNull { it.y + it.rows } ?: 0
+                    val placed = (0..lastRow).asSequence().flatMap { row ->
+                        (0..4 - width).asSequence().map { col -> template.copy(x = col, y = row) }
+                    }.first { next -> current.none(next::overlaps) }
+                    widgetDao.save(placed)
+                }
             }
         }
     }
@@ -180,11 +187,13 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun cancelInterruption() {
+    fun cancelInterruption(): Boolean {
+        val wasPreparing = lookup?.isActive == true
         lookup?.cancel()
-        val attempt = pending.value ?: return
+        val attempt = pending.value ?: return wasPreparing
         pending.value = null
         record(attempt.app, "cancelled", attempt)
+        return true
     }
 
     fun completeInterruption(): Boolean? {
@@ -197,7 +206,7 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
     private fun record(target: App, outcome: String, attempt: Interruption?) {
         val event = LaunchEvent(
             target.id, target.label, LocalDate.now().toString(),
-            attempt?.timestamp ?: System.currentTimeMillis(), outcome, attempt?.seconds
+            System.currentTimeMillis(), outcome, attempt?.seconds, attempt?.timestamp
         )
         val previousWrite = lastWrite
         lastWrite = viewModelScope.launch {
@@ -207,8 +216,12 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun launch(target: App, attempt: Interruption? = null): Boolean {
+        if (attempt == null) {
+            val data = preferences.value ?: return false
+            if (data[target.hidden] == "on" || data[target.restricted] == "on") return false
+        }
         val opened = start(target)
-        if (opened || attempt != null) record(target, if (opened) "opened" else "failed", attempt)
+        record(target, if (opened) "opened" else "failed", attempt)
         return opened
     }
 
@@ -238,21 +251,23 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
 
     fun toggleHidden(target: App, rejected: (String) -> Unit) {
         viewModelScope.launch {
-            if (!isHidden(target.component.packageName) && widgetDao.all().any {
-                ComponentName.unflattenFromString(it.provider)?.packageName == target.component.packageName
-            }) {
-                rejected("Quitá los widgets de la aplicación primero")
-                return@launch
+            widgetPolicy.withLock {
+                if (!isHidden(target.component.packageName) && widgetDao.all().any {
+                    ComponentName.unflattenFromString(it.provider)?.packageName == target.component.packageName
+                }) {
+                    rejected("Quitá los widgets de la aplicación primero")
+                    return@withLock
+                }
+                var blocked = false
+                app.preferences.edit { data ->
+                    if (data[target.hidden] == "on") data.remove(target.hidden)
+                    else if (decodeFavorites(data[favoritesKey]).any {
+                        ComponentName.unflattenFromString(it)?.packageName == target.component.packageName
+                    }) blocked = true
+                    else data[target.hidden] = "on"
+                }
+                if (blocked) rejected("Quitá la aplicación de favoritos primero")
             }
-            var blocked = false
-            app.preferences.edit { data ->
-                if (data[target.hidden] == "on") data.remove(target.hidden)
-                else if (decodeFavorites(data[favoritesKey]).any {
-                    ComponentName.unflattenFromString(it)?.packageName == target.component.packageName
-                }) blocked = true
-                else data[target.hidden] = "on"
-            }
-            if (blocked) rejected("Quitá la aplicación de favoritos primero")
         }
     }
 

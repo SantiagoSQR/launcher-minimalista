@@ -17,6 +17,7 @@ data class LaunchEvent(
     val timestamp: Long,
     val outcome: String,
     val waitSeconds: Int?,
+    val interruptionStartedAt: Long?,
     @PrimaryKey(autoGenerate = true) val id: Long = 0
 )
 
@@ -39,7 +40,7 @@ interface HistoryDao {
     suspend fun openingCount(day: String, appId: String): Int
 }
 
-@Database(entities = [LaunchEvent::class, Widget::class], version = 2)
+@Database(entities = [LaunchEvent::class, Widget::class], version = 3)
 abstract class LauncherDatabase : RoomDatabase() {
     abstract fun history(): HistoryDao
     abstract fun widgets(): WidgetDao
@@ -48,5 +49,12 @@ abstract class LauncherDatabase : RoomDatabase() {
 internal val addWidgets = object : androidx.room.migration.Migration(1, 2) {
     override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
         db.execSQL("CREATE TABLE Widget (id INTEGER NOT NULL PRIMARY KEY, provider TEXT NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL, columns INTEGER NOT NULL, rows INTEGER NOT NULL)")
+    }
+}
+
+internal val addInterruptionStart = object : androidx.room.migration.Migration(2, 3) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE LaunchEvent ADD COLUMN interruptionStartedAt INTEGER")
+        db.execSQL("UPDATE LaunchEvent SET interruptionStartedAt = timestamp WHERE waitSeconds IS NOT NULL")
     }
 }
