@@ -1,6 +1,9 @@
 package com.valen.launcher
 
 import android.widget.Toast
+import android.content.Intent
+import android.provider.Settings
+import java.time.LocalDate
 import android.os.SystemClock
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -40,7 +43,7 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
-private enum class Screen { Home, Drawer, Settings, Favorites, App, Wait, Progression, HiddenGate, Hidden, Widgets }
+private enum class Screen { Home, Drawer, Settings, Favorites, App, Wait, Progression, HiddenGate, Hidden, Widgets, Stats }
 
 @Composable
 fun LauncherScreen(
@@ -48,6 +51,8 @@ fun LauncherScreen(
     widgetRequest: Int, chooseHome: () -> Unit, pickWidget: (Float) -> Unit
 ) {
     val apps by model.apps.collectAsState()
+    val dailyActivity by model.dailyActivity.collectAsState()
+    val usage by model.usage.collectAsState()
     val attempt by model.interruption.collectAsState()
     val preferences by model.preferences.collectAsState()
     val ink = if (preferences?.get(colorKey) == "black") Color.Black else Color.White
@@ -127,6 +132,8 @@ fun LauncherScreen(
             Screen.Home -> {
                 val contextLocale = context.resources.configuration.locales[0]
                 var now by remember { mutableStateOf(ZonedDateTime.now()) }
+                val day = now.toLocalDate()
+                LaunchedEffect(day) { model.refreshUsage() }
                 LaunchedEffect(Unit) {
                     while (true) {
                         now = ZonedDateTime.now()
@@ -154,6 +161,10 @@ fun LauncherScreen(
                     Column(Modifier.padding(top = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         BasicText(now.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(contextLocale)), style = tone.copy(fontSize = 58.sp))
                         BasicText(now.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(contextLocale)), style = tone)
+                        val openings = dailyActivity.filter { it.day == day.toString() }.sumOf { it.openings }
+                        val estimate = usage?.get(day.toString())?.let(::usageText)
+                        val summary = (estimate?.let { "$it de uso estimado" } ?: "Uso no disponible") + " · $openings aperturas"
+                        Action(summary, tone.copy(fontSize = 13.sp)) { screen = Screen.Stats }
                         if (!defaultHome) Action(stringResource(R.string.choose_home), tone, chooseHome)
                     }
                     if (favorites.isNotEmpty()) {
@@ -176,6 +187,7 @@ fun LauncherScreen(
                         hiddenDeadline = SystemClock.elapsedRealtime() + seconds * 1000L
                         screen = Screen.HiddenGate
                     }
+                    Action("Estadísticas", tone) { screen = Screen.Stats }
                     Action("Demoras progresivas", tone) { screen = Screen.Progression }
                     Action("Ordenar favoritos", tone) { screen = Screen.Favorites }
                     Action(if (auto) "Apertura automática activada" else "Apertura automática desactivada", tone) {
@@ -216,6 +228,12 @@ fun LauncherScreen(
                         }
                     }
                 }
+            }
+            Screen.Stats -> StatisticsPanel(
+                dailyActivity, usage, LocalDate.now(),
+                { id, label -> apps.firstOrNull { it.id == id }?.let(::title) ?: label }, tone
+            ) {
+                context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
             }
             Screen.Widgets -> WidgetPanel(model, activity, tone, pickWidget)
             Screen.HiddenGate -> WaitPanel("Aplicaciones ocultas", hiddenDeadline, tone, confirm = {

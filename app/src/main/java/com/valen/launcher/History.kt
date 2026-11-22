@@ -24,6 +24,17 @@ data class LaunchEvent(
 interface HistoryDao {
     @Insert suspend fun record(event: LaunchEvent)
 
+    @Query("""
+        SELECT day, appId, MAX(label) AS label,
+            SUM(CASE WHEN outcome = 'opened' THEN 1 ELSE 0 END) AS openings,
+            SUM(CASE WHEN outcome = 'opened' AND waitSeconds IS NOT NULL THEN 1 ELSE 0 END) AS completed,
+            SUM(CASE WHEN outcome = 'cancelled' THEN 1 ELSE 0 END) AS cancelled
+        FROM LaunchEvent
+        GROUP BY day, appId
+        ORDER BY day DESC
+    """)
+    fun days(): kotlinx.coroutines.flow.Flow<List<DailyActivity>>
+
     @Query("SELECT count(*) FROM LaunchEvent WHERE day = :day AND appId = :appId AND outcome = 'opened'")
     suspend fun openingCount(day: String, appId: String): Int
 }

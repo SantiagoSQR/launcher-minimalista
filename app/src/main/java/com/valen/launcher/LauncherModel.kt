@@ -123,6 +123,17 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
     private val history = database.history()
+    val dailyActivity = history.days().stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptyList())
+    private val usageEstimates = MutableStateFlow<Map<String, Long>?>(null)
+    val usage = usageEstimates.asStateFlow()
+    private var usageJob: Job? = null
+
+    fun refreshUsage() {
+        usageJob?.cancel()
+        usageJob = viewModelScope.launch {
+            usageEstimates.value = kotlinx.coroutines.withContext(Dispatchers.IO) { estimateUsage(app, LocalDate.now()) }
+        }
+    }
     private val pending = MutableStateFlow<Interruption?>(null)
     val interruption = pending.asStateFlow()
     private var lookup: Job? = null

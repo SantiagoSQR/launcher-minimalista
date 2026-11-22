@@ -77,6 +77,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         refreshHomeRole()
         model.refresh()
+        model.refreshUsage()
     }
 
     override fun onStart() {
