@@ -1,6 +1,13 @@
 package com.valen.launcher
 
 import android.widget.Toast
+import android.os.SystemClock
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.semantics
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -33,7 +40,7 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
-private enum class Screen { Home, Drawer, Settings, Favorites, App, Wait, Progression }
+private enum class Screen { Home, Drawer, Settings, Favorites, App, Wait, Progression, HiddenGate, Hidden }
 
 @Composable
 fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int, chooseHome: () -> Unit) {
@@ -48,6 +55,7 @@ fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int,
     var screen by remember { mutableStateOf(Screen.Home) }
     var query by remember { mutableStateOf("") }
     var selected by remember { mutableStateOf<App?>(null) }
+    var hiddenDeadline by remember { mutableLongStateOf(0) }
     var alias by remember { mutableStateOf("") }
     val favoriteIds = remember(preferences) { decodeFavorites(preferences?.get(favoritesKey)) }
     val favorites = remember(apps, favoriteIds) {
@@ -67,7 +75,7 @@ fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int,
         screen = Screen.Home
         query = ""
         keyboard?.hide()
-        if (preferences?.get(app.restricted) == "on") {
+        if (preferences?.get(app.restricted) == "on" || preferences?.get(app.hidden) == "on") {
             selected = app
             screen = Screen.Wait
             model.requestInterruption(app)
@@ -82,7 +90,7 @@ fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int,
     BackHandler(screen != Screen.Home) {
         if (screen == Screen.Wait) cancel()
         else {
-            screen = if (screen in listOf(Screen.Favorites, Screen.App, Screen.Progression)) Screen.Settings else Screen.Home
+            screen = if (screen in listOf(Screen.Favorites, Screen.App, Screen.Progression, Screen.HiddenGate, Screen.Hidden)) Screen.Settings else Screen.Home
             query = ""
         }
     }
@@ -90,7 +98,9 @@ fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int,
     val focus = remember { FocusRequester() }
     val normalized = remember(query) { searchKey(query.trim()) }
     val results = remember(normalized, apps, preferences) {
-        apps.filter { normalized in searchKey(it.label) || normalized in searchKey(title(it)) }
+        apps.filter {
+            preferences?.get(it.hidden) != "on" && (normalized in searchKey(it.label) || normalized in searchKey(title(it)))
+        }
     }
     val sole = results.singleOrNull()
     val auto = preferences?.get(autoKey) != "off"
@@ -151,6 +161,11 @@ fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int,
             Screen.Settings -> LazyColumn(Modifier.padding(horizontal = 24.dp)) {
                 item {
                     BasicText("Ajustes", style = tone.copy(fontSize = 28.sp))
+                    HiddenAccess(tone) {
+                        val seconds = preferences?.get(hiddenDelayKey)?.toIntOrNull() ?: 10
+                        hiddenDeadline = SystemClock.elapsedRealtime() + seconds * 1000L
+                        screen = Screen.HiddenGate
+                    }
                     Action("Demoras progresivas", tone) { screen = Screen.Progression }
                     Action("Ordenar favoritos", tone) { screen = Screen.Favorites }
                     Action(if (auto) "Apertura automática activada" else "Apertura automática desactivada", tone) {
@@ -161,7 +176,10 @@ fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int,
                     }
                     if (!defaultHome) Action(stringResource(R.string.choose_home), tone, chooseHome)
                 }
-                items(apps, key = { it.id }) { Action(title(it), tone) { configure(it) } }
+                items(apps, key = { it.id }) {
+                    val suffix = if (preferences?.get(it.hidden) == "on") " · oculta" else ""
+                    Action(title(it) + suffix, tone) { configure(it) }
+                }
             }
             Screen.App -> selected?.let { app ->
                 Column(Modifier.padding(horizontal = 24.dp)) {
@@ -176,12 +194,29 @@ fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int,
                     Action(if (restricted) "Interrupción activada" else "Interrupción desactivada", tone) {
                         model.save(app.restricted, if (restricted) "off" else "on")
                     }
-                    Action(if (app.id in favoriteIds) "Quitar de favoritos" else "Añadir a favoritos", tone) {
-                        model.toggleFavorite(app.id)
+                    val hidden = preferences?.get(app.hidden) == "on"
+                    if (!hidden) {
+                        Action(if (app.id in favoriteIds) "Quitar de favoritos" else "Añadir a favoritos", tone) {
+                            model.toggleFavorite(app)
+                        }
+                    }
+                    Action(if (hidden) "Mostrar aplicación" else "Ocultar aplicación", tone) {
+                        model.toggleHidden(app) {
+                            Toast.makeText(context, "Quitá la aplicación de favoritos primero", Toast.LENGTH_SHORT).show()
+                        }
                     }
                 }
             }
-            Screen.Wait -> WaitPanel(selected?.let(::title).orEmpty(), attempt?.deadline, tone, {
+            Screen.HiddenGate -> WaitPanel("Aplicaciones ocultas", hiddenDeadline, tone, confirm = {
+                screen = Screen.Hidden
+            }, cancel = { screen = Screen.Settings })
+            Screen.Hidden -> LazyColumn(Modifier.padding(horizontal = 24.dp)) {
+                item { BasicText("Aplicaciones ocultas", style = tone.copy(fontSize = 28.sp)) }
+                val hidden = apps.filter { preferences?.get(it.hidden) == "on" }
+                if (hidden.isEmpty()) item { BasicText("No hay aplicaciones ocultas", style = tone) }
+                items(hidden, key = { it.id }) { Action(title(it), tone) { open(it) } }
+            }
+            Screen.Wait -> WaitPanel(selected?.let(::title).orEmpty(), attempt?.deadline, tone, attempt?.openingCount, {
                 model.completeInterruption()?.let { opened ->
                     screen = Screen.Home
                     if (!opened) failed()
@@ -189,15 +224,19 @@ fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int,
             }, ::cancel)
             Screen.Progression -> {
                 var value by remember { mutableStateOf(preferences?.get(progressionKey) ?: defaultProgression.joinToString(", ")) }
+                var hiddenValue by remember { mutableStateOf(preferences?.get(hiddenDelayKey) ?: "10") }
                 Column(Modifier.padding(horizontal = 24.dp)) {
                     BasicText("Demoras en segundos", style = tone.copy(fontSize = 28.sp))
                     BasicText("Separá los valores con comas", style = tone)
                     Input(value, { value = it }, "5, 10, 20, 30, 45, 60", tone)
+                    BasicText("Espera para aplicaciones ocultas", style = tone)
+                    Input(hiddenValue, { hiddenValue = it }, "10", tone)
                     Action("Guardar demoras", tone) {
                         val delays = parseDelays(value)
-                        if (delays == null) Toast.makeText(context, "Ingresá uno o más enteros no negativos", Toast.LENGTH_SHORT).show()
+                        val hiddenSeconds = hiddenValue.trim().toIntOrNull()
+                        if (delays == null || hiddenSeconds == null || hiddenSeconds < 0) Toast.makeText(context, "Ingresá uno o más enteros no negativos", Toast.LENGTH_SHORT).show()
                         else {
-                            model.save(progressionKey, delays.joinToString(", "))
+                            model.saveDelays(delays, hiddenSeconds)
                             keyboard?.hide()
                             screen = Screen.Settings
                         }
@@ -268,4 +307,28 @@ internal fun Input(value: String, change: (String) -> Unit, hint: String, style:
                 field()
             }
         })
+}
+
+@Composable
+private fun HiddenAccess(style: TextStyle, open: () -> Unit) {
+    val currentOpen by rememberUpdatedState(open)
+    BasicText(
+        "Aplicaciones ocultas · mantené presionado",
+        Modifier.semantics { onLongClick("Esperar para entrar") { currentOpen(); true } }
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val released = withTimeoutOrNull(1500) {
+                        waitForUpOrCancellation(PointerEventPass.Main)
+                        true
+                    }
+                    if (released == null) {
+                        down.consume()
+                        currentOpen()
+                    }
+                }
+            }
+            .padding(vertical = 12.dp, horizontal = 8.dp).heightIn(min = 24.dp),
+        style = style
+    )
 }

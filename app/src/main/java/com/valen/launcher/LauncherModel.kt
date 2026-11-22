@@ -27,12 +27,15 @@ private val Application.preferences by preferencesDataStore("launcher")
 
 data class App(val component: ComponentName, val label: String) {
     val id get() = component.flattenToString()
+    val hidden get() = hiddenKey(component.packageName)
     val restricted get() = stringPreferencesKey("restricted:$id")
     val alias get() = stringPreferencesKey("alias:$id")
 }
 
 val favoritesKey = stringPreferencesKey("favorites")
 val colorKey = stringPreferencesKey("color")
+fun hiddenKey(packageName: String) = stringPreferencesKey("hidden:$packageName")
+val hiddenDelayKey = stringPreferencesKey("hidden-delay")
 val progressionKey = stringPreferencesKey("progression")
 val autoKey = stringPreferencesKey("auto")
 
@@ -90,7 +93,7 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
         lookup = viewModelScope.launch {
             lastWrite?.join()
             val count = history.openingCount(LocalDate.now().toString(), target.id)
-            pending.value = Interruption(target, delays[count.coerceAtMost(delays.lastIndex)], System.currentTimeMillis())
+            pending.value = Interruption(target, delays[count.coerceAtMost(delays.lastIndex)], count, System.currentTimeMillis())
         }
     }
 
@@ -141,9 +144,34 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { app.preferences.edit { it[key] = value } }
     }
 
-    fun toggleFavorite(id: String) {
+    fun saveDelays(progression: List<Int>, hiddenSeconds: Int) {
         viewModelScope.launch {
             app.preferences.edit {
+                it[progressionKey] = progression.joinToString(", ")
+                it[hiddenDelayKey] = hiddenSeconds.toString()
+            }
+        }
+    }
+
+    fun toggleHidden(target: App, rejected: () -> Unit) {
+        viewModelScope.launch {
+            var blocked = false
+            app.preferences.edit { data ->
+                if (data[target.hidden] == "on") data.remove(target.hidden)
+                else if (decodeFavorites(data[favoritesKey]).any {
+                    ComponentName.unflattenFromString(it)?.packageName == target.component.packageName
+                }) blocked = true
+                else data[target.hidden] = "on"
+            }
+            if (blocked) rejected()
+        }
+    }
+
+    fun toggleFavorite(target: App) {
+        viewModelScope.launch {
+            app.preferences.edit {
+                if (it[target.hidden] == "on") return@edit
+                val id = target.id
                 val current = decodeFavorites(it[favoritesKey])
                 it[favoritesKey] = JSONArray(if (id in current) current - id else current + id).toString()
             }
