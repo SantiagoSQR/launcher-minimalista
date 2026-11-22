@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.Launcher" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowShowWallpaper">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+    </style>
+    <string name="app_name">Launcher minimalista</string>
+    <string name="choose_home">Seleccionar launcher predeterminado</string>
+</resources>
