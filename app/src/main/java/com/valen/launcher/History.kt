@@ -28,7 +28,14 @@ interface HistoryDao {
     suspend fun openingCount(day: String, appId: String): Int
 }
 
-@Database(entities = [LaunchEvent::class], version = 1)
+@Database(entities = [LaunchEvent::class, Widget::class], version = 2)
 abstract class LauncherDatabase : RoomDatabase() {
     abstract fun history(): HistoryDao
+    abstract fun widgets(): WidgetDao
+}
+
+internal val addWidgets = object : androidx.room.migration.Migration(1, 2) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE Widget (id INTEGER NOT NULL PRIMARY KEY, provider TEXT NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL, columns INTEGER NOT NULL, rows INTEGER NOT NULL)")
+    }
 }

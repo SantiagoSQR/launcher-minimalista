@@ -13,7 +13,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -40,10 +40,13 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
-private enum class Screen { Home, Drawer, Settings, Favorites, App, Wait, Progression, HiddenGate, Hidden }
+private enum class Screen { Home, Drawer, Settings, Favorites, App, Wait, Progression, HiddenGate, Hidden, Widgets }
 
 @Composable
-fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int, chooseHome: () -> Unit) {
+fun LauncherScreen(
+    model: LauncherModel, activity: MainActivity, defaultHome: Boolean, homeRequest: Int,
+    widgetRequest: Int, chooseHome: () -> Unit, pickWidget: (Float) -> Unit
+) {
     val apps by model.apps.collectAsState()
     val attempt by model.interruption.collectAsState()
     val preferences by model.preferences.collectAsState()
@@ -87,6 +90,7 @@ fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int,
         screen = Screen.App
     }
     LaunchedEffect(homeRequest) { cancel() }
+    LaunchedEffect(widgetRequest) { if (widgetRequest != 0) screen = Screen.Widgets }
     BackHandler(screen != Screen.Home) {
         if (screen == Screen.Wait) cancel()
         else {
@@ -133,11 +137,17 @@ fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int,
                     Modifier.fillMaxSize()
                         .pointerInput(Unit) { detectTapGestures(onLongPress = { screen = Screen.Settings }) }
                         .pointerInput(Unit) {
-                            var distance = 0f
-                            detectVerticalDragGestures(
-                                onDragStart = { distance = 0f },
-                                onDragEnd = { if (distance < -56.dp.toPx()) screen = Screen.Drawer }
-                            ) { _, delta -> distance += delta }
+                            var horizontal = 0f
+                            var vertical = 0f
+                            detectDragGestures(
+                                onDragStart = { horizontal = 0f; vertical = 0f },
+                                onDragEnd = {
+                                    val threshold = 56.dp.toPx()
+                                    if (kotlin.math.abs(horizontal) > kotlin.math.abs(vertical)) {
+                                        if (kotlin.math.abs(horizontal) > threshold) screen = Screen.Widgets
+                                    } else if (vertical < -threshold) screen = Screen.Drawer
+                                }
+                            ) { _, delta -> horizontal += delta.x; vertical += delta.y }
                         },
                     contentAlignment = Alignment.TopCenter
                 ) {
@@ -201,12 +211,13 @@ fun LauncherScreen(model: LauncherModel, defaultHome: Boolean, homeRequest: Int,
                         }
                     }
                     Action(if (hidden) "Mostrar aplicación" else "Ocultar aplicación", tone) {
-                        model.toggleHidden(app) {
-                            Toast.makeText(context, "Quitá la aplicación de favoritos primero", Toast.LENGTH_SHORT).show()
+                        model.toggleHidden(app) { message ->
+                            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
             }
+            Screen.Widgets -> WidgetPanel(model, activity, tone, pickWidget)
             Screen.HiddenGate -> WaitPanel("Aplicaciones ocultas", hiddenDeadline, tone, confirm = {
                 screen = Screen.Hidden
             }, cancel = { screen = Screen.Settings })

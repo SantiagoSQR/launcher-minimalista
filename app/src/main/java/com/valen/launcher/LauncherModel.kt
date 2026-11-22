@@ -1,6 +1,9 @@
 package com.valen.launcher
 
 import android.app.Application
+import android.appwidget.AppWidgetHost
+import android.appwidget.AppWidgetManager
+import androidx.room.withTransaction
 import android.content.ComponentName
 import android.content.pm.LauncherApps
 import android.os.Process
@@ -18,6 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import java.text.Normalizer
@@ -49,7 +53,75 @@ fun searchKey(value: String): String =
         .replace(Regex("\\p{M}+"), "").lowercase(Locale.ROOT)
 
 class LauncherModel(private val app: Application) : AndroidViewModel(app) {
-    private val database = Room.databaseBuilder(app, LauncherDatabase::class.java, "launcher.db").build()
+    private val database = Room.databaseBuilder(app, LauncherDatabase::class.java, "launcher.db")
+        .addMigrations(addWidgets).build()
+    private val widgetDao = database.widgets()
+    val widgets = widgetDao.observe().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val widgetManager: AppWidgetManager = AppWidgetManager.getInstance(app)
+    val widgetHost = object : AppWidgetHost(app, 1024) {
+        override fun onAppWidgetRemoved(appWidgetId: Int) {
+            viewModelScope.launch { widgetDao.remove(appWidgetId) }
+        }
+    }
+
+    fun cleanWidgets(pendingId: Int?) {
+        viewModelScope.launch {
+            val existing = widgetDao.all().map { it.id }.toSet()
+            val ids = widgetHost.appWidgetIds.toSet()
+            (existing - ids).forEach { widgetDao.remove(it) }
+            (ids - existing - setOfNotNull(pendingId)).forEach(widgetHost::deleteAppWidgetId)
+        }
+    }
+
+    fun isHidden(packageName: String): Boolean = preferences.value?.get(hiddenKey(packageName)) == "on"
+
+    fun addWidget(id: Int, cellWidth: Float, rejected: () -> Unit) {
+        viewModelScope.launch {
+            val info = widgetManager.getAppWidgetInfo(id)
+            val hidden = info != null && app.preferences.data.first()[hiddenKey(info.provider.packageName)] == "on"
+            if (info == null || hidden) {
+                widgetHost.deleteAppWidgetId(id)
+                rejected()
+                return@launch
+            }
+            val density = app.resources.displayMetrics.density
+            val bounds = widgetBounds(info, cellWidth, density)
+            if (bounds.minColumns > bounds.maxColumns) {
+                widgetHost.deleteAppWidgetId(id)
+                rejected()
+                return@launch
+            }
+            val width = (info.targetCellWidth.takeIf { it > 0 }
+                ?: kotlin.math.ceil(info.minWidth / density / cellWidth).toInt()).coerceIn(bounds.minColumns, bounds.maxColumns)
+            val height = (info.targetCellHeight.takeIf { it > 0 }
+                ?: kotlin.math.ceil(info.minHeight / density / widgetRowDp).toInt()).coerceIn(bounds.minRows, bounds.maxRows)
+            database.withTransaction {
+                val current = widgetDao.all()
+                val template = Widget(id, info.provider.flattenToString(), 0, 0, width, height)
+                val lastRow = current.maxOfOrNull { it.y + it.rows } ?: 0
+                val placed = (0..lastRow).asSequence().flatMap { row ->
+                    (0..4 - width).asSequence().map { col -> template.copy(x = col, y = row) }
+                }.first { next -> current.none(next::overlaps) }
+                widgetDao.save(placed)
+            }
+        }
+    }
+
+    fun placeWidget(widget: Widget) {
+        viewModelScope.launch {
+            database.withTransaction {
+                val current = widgetDao.all()
+                if (current.any { it.id == widget.id } && current.none(widget::overlaps)) widgetDao.save(widget)
+            }
+        }
+    }
+
+    fun removeWidget(id: Int) {
+        viewModelScope.launch {
+            widgetDao.remove(id)
+            widgetHost.deleteAppWidgetId(id)
+        }
+    }
     private val history = database.history()
     private val pending = MutableStateFlow<Interruption?>(null)
     val interruption = pending.asStateFlow()
@@ -153,8 +225,14 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun toggleHidden(target: App, rejected: () -> Unit) {
+    fun toggleHidden(target: App, rejected: (String) -> Unit) {
         viewModelScope.launch {
+            if (!isHidden(target.component.packageName) && widgetDao.all().any {
+                ComponentName.unflattenFromString(it.provider)?.packageName == target.component.packageName
+            }) {
+                rejected("Quitá los widgets de la aplicación primero")
+                return@launch
+            }
             var blocked = false
             app.preferences.edit { data ->
                 if (data[target.hidden] == "on") data.remove(target.hidden)
@@ -163,7 +241,7 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
                 }) blocked = true
                 else data[target.hidden] = "on"
             }
-            if (blocked) rejected()
+            if (blocked) rejected("Quitá la aplicación de favoritos primero")
         }
     }
 
