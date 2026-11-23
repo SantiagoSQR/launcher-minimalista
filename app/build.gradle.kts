@@ -12,8 +12,8 @@ android {
         applicationId = "com.valen.launcher"
         minSdk = 34
         targetSdk = 37
-        versionCode = 4
-        versionName = "1.0.0-rc3"
+        versionCode = 5
+        versionName = "1.0.0-rc4"
     }
 
     buildFeatures {

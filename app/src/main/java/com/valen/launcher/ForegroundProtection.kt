@@ -6,8 +6,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
-import android.os.SystemClock
 import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
@@ -37,11 +35,11 @@ internal fun Context.settingsPackage(): String =
 internal class ForegroundProtection : AccessibilityService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var rules: Preferences? = null
-    private var lastRedirectAt = Long.MIN_VALUE
+    private var previousPackage: String? = null
     private val settings by lazy { settingsPackage() }
     private val screenState = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            grant = null
+            previousPackage = null
         }
     }
 
@@ -53,73 +51,24 @@ internal class ForegroundProtection : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-        val foreground = event.packageName?.toString() ?: return
-        val now = SystemClock.uptimeMillis()
-        val current = grant
-        if (current != null && event.eventTime < current.issuedAt) return
-        if (current != null && !current.entered && now - current.issuedAt > ENTRY_WINDOW_MS) grant = null
-
-        if (foreground == packageName) {
-            grant = null
-            return
-        }
-        if (foreground == "com.android.systemui" || foreground == "com.android.permissioncontroller" ||
-            foreground == "com.google.android.permissioncontroller"
-        ) return
-
-        if (rules?.get(protectionKey(foreground)) != "on" || foreground == settings) {
-            if (grant?.entered == true && isActivity(foreground, event.className?.toString())) grant = null
-            return
-        }
-
-        val allowed = grant
-        if (allowed?.packageName == foreground) {
-            allowed.entered = true
-            return
-        }
-        grant = null
-        if (lastRedirectAt == Long.MIN_VALUE || now - lastRedirectAt >= REDIRECT_INTERVAL_MS) {
-            if (performGlobalAction(GLOBAL_ACTION_HOME)) lastRedirectAt = now
-        }
-    }
-
-    private fun isActivity(packageName: String, className: String?): Boolean {
-        if (className == null) return false
-        return try {
-            packageManager.getActivityInfo(
-                ComponentName.createRelative(packageName, className),
-                PackageManager.ComponentInfoFlags.of(0)
-            )
-            true
-        } catch (_: PackageManager.NameNotFoundException) {
-            false
+        val foreground = event.packageName?.toString()
+        val fromSettings = previousPackage == settings
+        previousPackage = foreground
+        if (fromSettings && foreground != null && foreground != settings &&
+            rules?.get(protectionKey(foreground)) == "on"
+        ) {
+            performGlobalAction(GLOBAL_ACTION_HOME)
         }
     }
 
     override fun onInterrupt() {
-        grant = null
+        previousPackage = null
     }
 
     override fun onDestroy() {
-        grant = null
+        previousPackage = null
         unregisterReceiver(screenState)
         scope.cancel()
         super.onDestroy()
-    }
-
-    companion object {
-        private const val ENTRY_WINDOW_MS = 5_000L
-        private const val REDIRECT_INTERVAL_MS = 400L
-        private data class Grant(val packageName: String, val issuedAt: Long, var entered: Boolean = false)
-        private var grant: Grant? = null
-
-        // The launcher and service run in the same process, on the main thread.
-        fun authorize(packageName: String) {
-            grant = Grant(packageName, SystemClock.uptimeMillis())
-        }
-
-        fun revoke() {
-            grant = null
-        }
     }
 }

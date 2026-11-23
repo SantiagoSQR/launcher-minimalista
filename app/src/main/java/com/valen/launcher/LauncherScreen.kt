@@ -323,11 +323,11 @@ fun LauncherScreen(
                     }
                     if (app.component.packageName != settingsPackage) {
                         val protected = preferences?.get(app.protected) == "on"
-                        Action(if (protected) "Protección de aperturas externas activada" else "Proteger aperturas externas", tone) {
+                        Action(if (protected) "Protección desde Ajustes activada" else "Proteger aperturas desde Ajustes", tone) {
                             model.save(app.protected, if (protected) "off" else "on")
                         }
                         if (protected && !protectionEnabled) {
-                            BasicText("La protección externa requiere activar el servicio de accesibilidad del launcher. La pausa desde el launcher ya está activa.",
+                            BasicText("La protección desde Ajustes requiere activar el servicio de accesibilidad del launcher. La pausa desde el launcher ya está activa.",
                                 style = tone.copy(fontSize = 14.sp))
                             Action("Abrir ajustes de accesibilidad", tone) {
                                 context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))

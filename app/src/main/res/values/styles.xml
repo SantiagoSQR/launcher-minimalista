@@ -7,5 +7,5 @@
     <string name="app_name">Launcher minimalista</string>
     <string name="choose_home">Seleccionar launcher predeterminado</string>
     <string name="protection_name">Protección de aperturas del launcher</string>
-    <string name="protection_description">Vuelve a Inicio cuando una aplicación protegida se abre sin completar la pausa. Usa el identificador de la aplicación en primer plano y funciona sin leer el contenido de la pantalla ni enviar datos.</string>
+    <string name="protection_description">Vuelve a Inicio cuando una aplicación protegida se abre desde Ajustes. Usa el identificador de la aplicación en primer plano y funciona sin leer el contenido de la pantalla ni enviar datos.</string>
 </resources>

@@ -219,9 +219,7 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
         val data = preferences.value ?: return false
         val protected = data[target.protected] == "on"
         if (attempt == null && (data[target.hidden] == "on" || data[target.restricted] == "on" || protected)) return false
-        if (protected) ForegroundProtection.authorize(target.component.packageName)
         val opened = start(target)
-        if (protected && !opened) ForegroundProtection.revoke()
         record(target, if (opened) "opened" else "failed", attempt)
         return opened
     }
