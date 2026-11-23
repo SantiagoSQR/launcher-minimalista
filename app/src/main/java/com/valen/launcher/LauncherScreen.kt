@@ -2,6 +2,9 @@ package com.valen.launcher
 
 import android.widget.Toast
 import android.content.Intent
+import android.net.Uri
+import android.content.ActivityNotFoundException
+import java.util.Date
 import android.provider.Settings
 import java.time.LocalDate
 import android.os.SystemClock
@@ -19,6 +22,17 @@ import androidx.compose.ui.semantics.semantics
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 
@@ -61,15 +75,17 @@ fun LauncherScreen(
     val usage by model.usage.collectAsState()
     val attempt by model.interruption.collectAsState()
     val preferences by model.preferences.collectAsState()
-    val ink = if (preferences?.get(colorKey) == "black") Color.Black else Color.White
-    val panel = if (ink == Color.Black) Color.White else Color(0xff101010)
-    val tone = TextStyle(color = ink, fontSize = 18.sp)
+    val panel = Color.Black
+    val tone = TextStyle(color = Color.White, fontSize = 18.sp, fontFamily = FontFamily(Font(R.font.inter)))
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var screen by remember { mutableStateOf(Screen.Home) }
     var statsFromSettings by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
+    var autoArmed by remember { mutableStateOf(false) }
+    var appOrigin by remember { mutableStateOf(Screen.Settings) }
+    var returnToSearch by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<App?>(null) }
     var hiddenDeadline by remember { mutableLongStateOf(0) }
     var alias by remember { mutableStateOf("") }
@@ -85,22 +101,36 @@ fun LauncherScreen(
     fun cancel() {
         model.cancelInterruption()
         screen = Screen.Home
+        autoArmed = false
         query = ""
+    }
+    fun dismissWait() {
+        model.cancelInterruption()
+        screen = if (returnToSearch) Screen.Drawer else Screen.Home
+        autoArmed = false
+        if (!returnToSearch) query = ""
     }
     fun open(app: App) {
         val data = preferences ?: return
         val hidden = data[app.hidden] == "on"
         if (hidden && screen != Screen.Hidden) return
-        screen = Screen.Home
-        query = ""
+        returnToSearch = screen == Screen.Drawer
+        autoArmed = false
         keyboard?.hide()
         if (data[app.restricted] == "on" || hidden) {
             selected = app
             screen = Screen.Wait
             model.requestInterruption(app)
-        } else if (!model.launch(app)) failed()
+        } else {
+            screen = Screen.Home
+            query = ""
+            if (!model.launch(app)) failed()
+        }
     }
     fun configure(app: App) {
+        appOrigin = screen
+        autoArmed = false
+        keyboard?.hide()
         selected = app
         alias = preferences?.get(app.alias).orEmpty()
         screen = Screen.App
@@ -108,14 +138,15 @@ fun LauncherScreen(
     LaunchedEffect(homeRequest) { cancel() }
     LaunchedEffect(widgetRequest) { if (widgetRequest != 0) screen = Screen.Widgets }
     BackHandler(screen != Screen.Home) {
-        if (screen == Screen.Wait) cancel()
+        if (screen == Screen.Wait) dismissWait()
         else {
             screen = when (screen) {
-                Screen.Favorites, Screen.App, Screen.Progression, Screen.HiddenGate, Screen.Hidden -> Screen.Settings
+                Screen.Favorites, Screen.Progression, Screen.HiddenGate, Screen.Hidden -> Screen.Settings
+                Screen.App -> appOrigin
                 Screen.Stats -> if (statsFromSettings) Screen.Settings else Screen.Home
                 else -> Screen.Home
             }
-            query = ""
+            if (screen != Screen.Drawer) query = ""
         }
     }
 
@@ -127,15 +158,21 @@ fun LauncherScreen(
             .map { Triple(it, searchKey(it.label), searchKey(title(it))) }
     }
     val results = remember(normalized, searchIndex) {
-        searchIndex.filter { (_, original, shown) -> normalized in original || normalized in shown }.map { it.first }
+        searchIndex.mapNotNull { (app, original, shown) ->
+            val rank = minOf(matchRank(normalized, original), matchRank(normalized, shown))
+            if (rank == Int.MAX_VALUE) null else app to rank
+        }.sortedBy { it.second }
     }
     val sole = results.singleOrNull()
     val auto = preferences?.get(autoKey) != "off"
-    LaunchedEffect(screen, query, sole, auto) {
-        if (screen == Screen.Drawer && auto && normalized.isNotEmpty() && sole != null) {
+    val automaticApp = sole?.first?.takeIf {
+        sole.second == 0 && preferences?.get(it.restricted) != "on"
+    }
+    LaunchedEffect(screen, query, automaticApp, auto, autoArmed) {
+        if (screen == Screen.Drawer && auto && autoArmed && normalized.isNotEmpty() && automaticApp != null) {
             lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 delay(500)
-                open(sole)
+                open(automaticApp)
             }
         }
     }
@@ -180,29 +217,65 @@ fun LauncherScreen(
                         },
                     contentAlignment = Alignment.TopCenter
                 ) {
-                    Column(Modifier.padding(top = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        BasicText(now.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(contextLocale)), style = tone.copy(fontSize = 58.sp))
-                        BasicText(now.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(contextLocale)), style = tone)
-                        val openings = dailyActivity.filter { it.day == day.toString() }.sumOf { it.openings }
-                        val estimate = usage?.get(day.toString())?.let(::usageText)
-                        val summary = (estimate?.let { "$it de uso estimado" } ?: "Uso no disponible") + " · $openings aperturas"
-                        Action(summary, tone.copy(fontSize = 13.sp)) {
-                            statsFromSettings = false
-                            screen = Screen.Stats
+                    val favoritesHeight = maxHeight * 0.55f
+                    Column(
+                        Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Column(Modifier.padding(top = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            BasicText(
+                                android.text.format.DateFormat.getTimeFormat(context).format(Date.from(now.toInstant())),
+                                modifier = Modifier.semantics {
+                                    customActions = listOf(
+                                        CustomAccessibilityAction("Abrir aplicaciones") { screen = Screen.Drawer; true },
+                                        CustomAccessibilityAction("Abrir ajustes") { screen = Screen.Settings; true },
+                                        CustomAccessibilityAction("Abrir widgets") { screen = Screen.Widgets; true }
+                                    )
+                                },
+                                style = tone.copy(fontSize = 58.sp, fontFeatureSettings = "tnum")
+                            )
+                            BasicText(now.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(contextLocale)), style = tone)
+                            val openings = dailyActivity.filter { it.day == day.toString() }.sumOf { it.openings }
+                            val estimate = usage?.get(day.toString())?.let(::usageText)
+                            val count = if (openings == 1) "1 apertura" else "$openings aperturas"
+                            val summary = listOfNotNull(estimate?.let { "$it de uso estimado" }, count).joinToString(" · ")
+                            Action(summary, tone.copy(fontSize = 13.sp)) {
+                                statsFromSettings = false
+                                screen = Screen.Stats
+                            }
+                            if (!defaultHome) Action(stringResource(R.string.choose_home), tone, chooseHome)
                         }
-                        if (!defaultHome) Action(stringResource(R.string.choose_home), tone, chooseHome)
-                    }
-                    if (favorites.isNotEmpty()) {
-                        LazyColumn(
-                            Modifier.align(Alignment.BottomCenter).heightIn(max = maxHeight * 0.55f).padding(bottom = 24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) { items(favorites, key = { it.id }) { Action(title(it), tone) { open(it) } } }
+                        if (favorites.isNotEmpty()) {
+                            LazyColumn(
+                                Modifier.heightIn(max = favoritesHeight).padding(bottom = 24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) { items(favorites, key = { it.id }) { AppRow(title(it), tone.copy(fontWeight = FontWeight.Medium), { open(it) }, { configure(it) }) } }
+                        }
                     }
                 }
             }
             Screen.Drawer -> Column(Modifier.padding(horizontal = 24.dp)) {
-                Input(query, { query = it }, "Buscar aplicaciones", tone, Modifier.focusRequester(focus))
-                LazyColumn { items(results, key = { it.id }) { Action(title(it), tone) { open(it) } } }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) {
+                        Input(query, { query = it; autoArmed = true }, "Buscar aplicaciones", tone,
+                            Modifier.focusRequester(focus), onOpen = { sole?.first?.let(::open) })
+                    }
+                    if (query.isNotEmpty()) Action("Borrar", tone) { query = ""; autoArmed = false }
+                }
+                if (results.isEmpty() && normalized.isNotEmpty()) BasicText("Sin resultados", style = tone)
+                LazyColumn(Modifier.pointerInput(Unit) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        autoArmed = false
+                    }
+                }) {
+                    items(results, key = { it.first.id }) { (app, _) ->
+                        val shown = title(app)
+                        val ambiguous = results.any { it.first.id != app.id && title(it.first) == shown }
+                        val label = if (ambiguous && shown != app.label) "$shown · ${app.label}" else shown
+                        AppRow(label, tone, { open(app) }, { configure(app) })
+                    }
+                }
             }
             Screen.Settings -> LazyColumn(Modifier.padding(horizontal = 24.dp)) {
                 item {
@@ -221,9 +294,6 @@ fun LauncherScreen(
                     Action(if (auto) "Apertura automática activada" else "Apertura automática desactivada", tone) {
                         model.save(autoKey, if (auto) "off" else "on")
                     }
-                    Action(if (ink == Color.White) "Texto blanco" else "Texto negro", tone) {
-                        model.save(colorKey, if (ink == Color.White) "black" else "white")
-                    }
                     if (!defaultHome) Action(stringResource(R.string.choose_home), tone, chooseHome)
                 }
                 items(apps, key = { it.id }) {
@@ -232,13 +302,13 @@ fun LauncherScreen(
                 }
             }
             Screen.App -> selected?.let { app ->
-                Column(Modifier.padding(horizontal = 24.dp)) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)) {
                     BasicText(app.label, style = tone.copy(fontSize = 28.sp))
                     Input(alias, { alias = it }, "Alias", tone)
                     Action("Guardar alias", tone) {
                         model.save(app.alias, alias.trim())
                         keyboard?.hide()
-                        screen = Screen.Settings
+                        screen = appOrigin
                     }
                     val restricted = preferences?.get(app.restricted) == "on"
                     Action(if (restricted) "Interrupción activada" else "Interrupción desactivada", tone) {
@@ -248,6 +318,14 @@ fun LauncherScreen(
                     if (!hidden) {
                         Action(if (app.id in favoriteIds) "Quitar de favoritos" else "Añadir a favoritos", tone) {
                             model.toggleFavorite(app)
+                        }
+                    }
+                    Action("Información de la app", tone) {
+                        try {
+                            context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.fromParts("package", app.component.packageName, null)))
+                        } catch (_: ActivityNotFoundException) {
+                            failed()
                         }
                     }
                     Action(if (hidden) "Mostrar aplicación" else "Ocultar aplicación", tone) {
@@ -276,9 +354,10 @@ fun LauncherScreen(
             Screen.Wait -> WaitPanel(selected?.let(::title).orEmpty(), attempt?.deadline, tone, attempt?.openingCount, {
                 model.completeInterruption()?.let { opened ->
                     screen = Screen.Home
+                    query = ""
                     if (!opened) failed()
                 }
-            }, ::cancel)
+            }, ::dismissWait)
             Screen.Progression -> {
                 var value by remember { mutableStateOf(preferences?.get(progressionKey) ?: defaultProgression.joinToString(", ")) }
                 var hiddenValue by remember { mutableStateOf(preferences?.get(hiddenDelayKey) ?: "10") }
@@ -316,7 +395,21 @@ private fun Favorites(apps: List<App>, title: (App) -> String, style: TextStyle,
     LazyColumn(Modifier.padding(horizontal = 24.dp), state = state) {
         item { BasicText("Arrastrá para ordenar", style = style) }
         items(order, key = { it.id }) { app ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            val index = order.indexOf(app)
+            fun move(to: Int): Boolean {
+                val from = order.indexOf(app)
+                if (from < 0 || to !in order.indices) return false
+                val next = order.toMutableList().apply { add(to, removeAt(from)) }
+                order = next
+                latestSave(next)
+                return true
+            }
+            Row(Modifier.semantics {
+                customActions = buildList {
+                    if (index > 0) add(CustomAccessibilityAction("Subir") { move(index - 1) })
+                    if (index < order.lastIndex) add(CustomAccessibilityAction("Bajar") { move(index + 1) })
+                }
+            }, verticalAlignment = Alignment.CenterVertically) {
                 BasicText(title(app), Modifier.weight(1f).padding(vertical = 14.dp), style = style)
                 BasicText(
                     "↕",
@@ -349,15 +442,34 @@ private fun Favorites(apps: List<App>, title: (App) -> String, style: TextStyle,
     }
 }
 
-@Composable
-internal fun Action(label: String, style: TextStyle, action: () -> Unit) {
-    BasicText(label, Modifier.clickable(role = Role.Button, onClick = action).padding(vertical = 12.dp, horizontal = 8.dp)
-        .heightIn(min = 24.dp), style = style)
+private fun matchRank(query: String, value: String): Int = when {
+    value == query -> 0
+    value.startsWith(query) -> 1
+    value.split(' ', '-', '_').any { it.startsWith(query) } -> 2
+    query in value -> 3
+    else -> Int.MAX_VALUE
 }
 
 @Composable
-internal fun Input(value: String, change: (String) -> Unit, hint: String, style: TextStyle, modifier: Modifier = Modifier) {
+private fun AppRow(label: String, style: TextStyle, open: () -> Unit, edit: () -> Unit) {
+    Box(Modifier.combinedClickable(role = Role.Button, onClick = open,
+        onLongClickLabel = "Editar aplicación", onLongClick = edit)
+        .sizeIn(minWidth = 48.dp, minHeight = 48.dp).padding(horizontal = 8.dp, vertical = 10.dp),
+        contentAlignment = Alignment.CenterStart
+    ) { BasicText(label, style = style) }
+}
+
+@Composable
+internal fun Action(label: String, style: TextStyle, action: () -> Unit) {
+    BasicText(label, Modifier.clickable(role = Role.Button, onClick = action).padding(vertical = 12.dp, horizontal = 8.dp)
+        .sizeIn(minWidth = 32.dp, minHeight = 24.dp), style = style)
+}
+
+@Composable
+internal fun Input(value: String, change: (String) -> Unit, hint: String, style: TextStyle, modifier: Modifier = Modifier, onOpen: (() -> Unit)? = null) {
     BasicTextField(value, change, modifier.fillMaxWidth().semantics { contentDescription = hint }.padding(vertical = 16.dp), singleLine = true,
+        keyboardOptions = if (onOpen == null) KeyboardOptions.Default else KeyboardOptions(imeAction = ImeAction.Go),
+        keyboardActions = KeyboardActions(onGo = { onOpen?.invoke() }),
         textStyle = style, cursorBrush = SolidColor(style.color), decorationBox = { field ->
             Box {
                 if (value.isEmpty()) BasicText(hint, style = style.copy(color = style.color.copy(alpha = 0.65f)))

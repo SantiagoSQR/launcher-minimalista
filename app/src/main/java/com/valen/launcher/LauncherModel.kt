@@ -39,7 +39,6 @@ data class App(val component: ComponentName, val label: String) {
 }
 
 val favoritesKey = stringPreferencesKey("favorites")
-val colorKey = stringPreferencesKey("color")
 fun hiddenKey(packageName: String) = stringPreferencesKey("hidden:$packageName")
 val hiddenDelayKey = stringPreferencesKey("hidden-delay")
 val progressionKey = stringPreferencesKey("progression")
