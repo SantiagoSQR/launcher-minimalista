@@ -24,12 +24,16 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.res.booleanResource
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -76,8 +80,14 @@ fun LauncherScreen(
     val usage by model.usage.collectAsState()
     val attempt by model.interruption.collectAsState()
     val preferences by model.preferences.collectAsState()
+    val retro = booleanResource(R.bool.retro_style)
     val panel = Color.Black
-    val tone = TextStyle(color = Color.White, fontSize = 18.sp, fontFamily = FontFamily(Font(R.font.inter)))
+    val inter = FontFamily(Font(R.font.inter))
+    val clockFont = remember(retro) {
+        if (retro) FontFamily(Font(R.font.inter, weight = FontWeight.Bold,
+            variationSettings = FontVariation.Settings(FontVariation.weight(700)))) else inter
+    }
+    val tone = TextStyle(color = Color.White, fontSize = 18.sp, fontFamily = inter)
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
     val settingsPackage = remember(context) { context.settingsPackage() }
@@ -239,9 +249,18 @@ fun LauncherScreen(
                                         CustomAccessibilityAction("Abrir widgets") { screen = Screen.Widgets; true }
                                     )
                                 },
-                                style = tone.copy(fontSize = 58.sp, fontFeatureSettings = "tnum")
+                                style = tone.copy(
+                                    fontSize = 58.sp,
+                                    fontFamily = clockFont,
+                                    fontWeight = if (retro) FontWeight.Bold else tone.fontWeight,
+                                    fontFeatureSettings = "tnum"
+                                )
                             )
-                            BasicText(now.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(contextLocale)), style = tone)
+                            val date = now.format(DateTimeFormatter.ofLocalizedDate(
+                                if (retro) FormatStyle.MEDIUM else FormatStyle.FULL
+                            ).withLocale(contextLocale))
+                            BasicText(if (retro) date.uppercase(contextLocale) else date,
+                                style = if (retro) tone.copy(fontSize = 14.sp, letterSpacing = 1.sp) else tone)
                             val openings = dailyActivity.filter { it.day == day.toString() }.sumOf { it.openings }
                             val estimate = usage?.get(day.toString())?.let(::usageText)
                             val count = if (openings == 1) "1 apertura" else "$openings aperturas"
@@ -250,18 +269,21 @@ fun LauncherScreen(
                                 statsFromSettings = false
                                 screen = Screen.Stats
                             }
-                            if (!defaultHome) Action(stringResource(R.string.choose_home), tone, chooseHome)
+                            if (!defaultHome) Action(stringResource(R.string.choose_home), tone, action = chooseHome)
                         }
                         if (favorites.isNotEmpty()) {
                             LazyColumn(
                                 Modifier.heightIn(max = favoritesHeight).padding(bottom = 24.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
-                            ) { items(favorites, key = { it.id }) { AppRow(title(it), tone.copy(fontWeight = FontWeight.Medium), { open(it) }, { configure(it) }) } }
+                            ) {
+                                if (retro) item { Spacer(Modifier.width(144.dp).height(1.dp).background(Color.Gray)) }
+                                items(favorites, key = { it.id }) { AppRow(title(it), tone.copy(fontWeight = FontWeight.Medium), { open(it) }, { configure(it) }) } }
                         }
                     }
                 }
             }
             Screen.Drawer -> Column(Modifier.padding(horizontal = 24.dp)) {
+                if (retro) RetroHeading("Aplicaciones", tone)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f)) {
                         Input(query, { query = it; autoArmed = true }, "Buscar aplicaciones", tone,
@@ -280,7 +302,7 @@ fun LauncherScreen(
                         val shown = title(app)
                         val ambiguous = results.any { it.first.id != app.id && title(it.first) == shown }
                         val label = if (ambiguous && shown != app.label) "$shown · ${app.label}" else shown
-                        AppRow(label, tone, { open(app) }, { configure(app) })
+                        AppRow(label, tone, { open(app) }, { configure(app) }, retroList = retro)
                     }
                 }
             }
@@ -301,7 +323,7 @@ fun LauncherScreen(
                     Action(if (auto) "Apertura automática activada" else "Apertura automática desactivada", tone) {
                         model.save(autoKey, if (auto) "off" else "on")
                     }
-                    if (!defaultHome) Action(stringResource(R.string.choose_home), tone, chooseHome)
+                    if (!defaultHome) Action(stringResource(R.string.choose_home), tone, action = chooseHome)
                 }
                 items(apps, key = { it.id }) {
                     val suffix = if (preferences?.get(it.hidden) == "on") " · oculta" else ""
@@ -310,37 +332,38 @@ fun LauncherScreen(
             }
             Screen.App -> selected?.let { app ->
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)) {
-                    BasicText(app.label, style = tone.copy(fontSize = 28.sp))
+                    if (retro) RetroHeading(app.label, tone)
+                    else BasicText(app.label, style = tone.copy(fontSize = 28.sp))
                     Input(alias, { alias = it }, "Alias", tone)
-                    Action("Guardar alias", tone) {
+                    Action("Guardar alias", tone, retroList = retro) {
                         model.save(app.alias, alias.trim())
                         keyboard?.hide()
                         screen = appOrigin
                     }
                     val restricted = preferences?.get(app.restricted) == "on"
-                    Action(if (restricted) "Interrupción activada" else "Interrupción desactivada", tone) {
+                    Action(if (restricted) "Interrupción activada" else "Interrupción desactivada", tone, retroList = retro) {
                         model.save(app.restricted, if (restricted) "off" else "on")
                     }
                     if (app.component.packageName != settingsPackage) {
                         val protected = preferences?.get(app.protected) == "on"
-                        Action(if (protected) "Protección desde Ajustes activada" else "Proteger aperturas desde Ajustes", tone) {
+                        Action(if (protected) "Protección desde Ajustes activada" else "Proteger aperturas desde Ajustes", tone, retroList = retro) {
                             model.save(app.protected, if (protected) "off" else "on")
                         }
                         if (protected && !protectionEnabled) {
                             BasicText("La protección desde Ajustes requiere activar el servicio de accesibilidad del launcher. La pausa desde el launcher ya está activa.",
                                 style = tone.copy(fontSize = 14.sp))
-                            Action("Abrir ajustes de accesibilidad", tone) {
+                            Action("Abrir ajustes de accesibilidad", tone, retroList = retro) {
                                 context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                             }
                         }
                     }
                     val hidden = preferences?.get(app.hidden) == "on"
                     if (!hidden) {
-                        Action(if (app.id in favoriteIds) "Quitar de favoritos" else "Añadir a favoritos", tone) {
+                        Action(if (app.id in favoriteIds) "Quitar de favoritos" else "Añadir a favoritos", tone, retroList = retro) {
                             model.toggleFavorite(app)
                         }
                     }
-                    Action("Información de la app", tone) {
+                    Action("Información de la app", tone, retroList = retro) {
                         try {
                             context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                                 Uri.fromParts("package", app.component.packageName, null)))
@@ -348,7 +371,7 @@ fun LauncherScreen(
                             failed()
                         }
                     }
-                    Action(if (hidden) "Mostrar aplicación" else "Ocultar aplicación", tone) {
+                    Action(if (hidden) "Mostrar aplicación" else "Ocultar aplicación", tone, retroList = retro) {
                         model.toggleHidden(app) { message ->
                             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                         }
@@ -471,16 +494,34 @@ private fun matchRank(query: String, value: String): Int = when {
 }
 
 @Composable
-private fun AppRow(label: String, style: TextStyle, open: () -> Unit, edit: () -> Unit) {
-    Box(Modifier.combinedClickable(role = Role.Button, onClick = open,
-        onLongClickLabel = "Editar aplicación", onLongClick = edit)
-        .sizeIn(minWidth = 48.dp, minHeight = 48.dp).padding(horizontal = 8.dp, vertical = 10.dp),
-        contentAlignment = Alignment.CenterStart
-    ) { BasicText(label, style = style) }
+private fun RetroHeading(label: String, style: TextStyle) {
+    BasicText(label, Modifier.padding(vertical = 12.dp), style = style.copy(fontWeight = FontWeight.Medium))
+    Spacer(Modifier.fillMaxWidth().height(1.dp).background(Color.Gray))
 }
 
 @Composable
-internal fun Action(label: String, style: TextStyle, action: () -> Unit) {
+private fun AppRow(label: String, style: TextStyle, open: () -> Unit, edit: () -> Unit, retroList: Boolean = false) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val row = if (retroList) Modifier.fillMaxWidth().background(if (pressed) Color.White else Color.Transparent) else Modifier
+    Box(row.combinedClickable(interactionSource = interaction, indication = if (retroList) null else androidx.compose.foundation.LocalIndication.current,
+        role = Role.Button, onClick = open, onLongClickLabel = "Editar aplicación", onLongClick = edit)
+        .sizeIn(minWidth = 48.dp, minHeight = 48.dp).padding(horizontal = 8.dp, vertical = 10.dp),
+        contentAlignment = Alignment.CenterStart
+    ) { BasicText(label, style = if (retroList && pressed) style.copy(color = Color.Black) else style) }
+}
+
+@Composable
+internal fun Action(label: String, style: TextStyle, retroList: Boolean = false, action: () -> Unit) {
+    if (retroList) {
+        val interaction = remember { MutableInteractionSource() }
+        val pressed by interaction.collectIsPressedAsState()
+        BasicText(label, Modifier.fillMaxWidth().background(if (pressed) Color.White else Color.Transparent)
+            .clickable(interactionSource = interaction, indication = null, role = Role.Button, onClick = action)
+            .padding(vertical = 12.dp, horizontal = 8.dp).heightIn(min = 24.dp),
+            style = if (pressed) style.copy(color = Color.Black) else style)
+        return
+    }
     BasicText(label, Modifier.clickable(role = Role.Button, onClick = action).padding(vertical = 12.dp, horizontal = 8.dp)
         .sizeIn(minWidth = 32.dp, minHeight = 24.dp), style = style)
 }

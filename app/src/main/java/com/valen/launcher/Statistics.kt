@@ -110,7 +110,7 @@ internal fun StatisticsPanel(
             BasicText("Estadísticas", style = style.copy(fontSize = 28.sp))
             if (usage == null) {
                 BasicText("Tiempo de uso no disponible", style = style)
-                Action("Dar acceso a estadísticas de Android", style, openPermission)
+                Action("Dar acceso a estadísticas de Android", style, action = openPermission)
             } else {
                 BasicText("Tiempo de pantalla activa y desbloqueada · estimación de Android", style = style.copy(fontSize = 14.sp))
             }

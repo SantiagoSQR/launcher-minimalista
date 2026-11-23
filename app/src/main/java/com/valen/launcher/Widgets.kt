@@ -158,5 +158,5 @@ private fun WidgetEditor(
         change("− alto", widget.copy(rows = widget.rows - 1))
         change("+ alto", widget.copy(rows = widget.rows + 1))
     }
-    Action("Quitar widget", style, remove)
+    Action("Quitar widget", style, action = remove)
 }

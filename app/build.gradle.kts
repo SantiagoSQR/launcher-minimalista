@@ -16,6 +16,16 @@ android {
         versionName = "1.0.0-rc4"
     }
 
+    flavorDimensions += "appearance"
+    productFlavors {
+        create("classic") { dimension = "appearance" }
+        create("retro") {
+            dimension = "appearance"
+            applicationIdSuffix = ".retro"
+            versionNameSuffix = "-retro"
+        }
+    }
+
     buildFeatures {
         compose = true
     }
