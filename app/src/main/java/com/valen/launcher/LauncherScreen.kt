@@ -17,6 +17,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onLongClick
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.semantics.semantics
 import androidx.activity.compose.BackHandler
@@ -79,6 +80,11 @@ fun LauncherScreen(
     val tone = TextStyle(color = Color.White, fontSize = 18.sp, fontFamily = FontFamily(Font(R.font.inter)))
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
+    val settingsPackage = remember(context) { context.settingsPackage() }
+    var protectionEnabled by remember(context) { mutableStateOf(context.protectionEnabled()) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        protectionEnabled = context.protectionEnabled()
+    }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var screen by remember { mutableStateOf(Screen.Home) }
     var statsFromSettings by remember { mutableStateOf(false) }
@@ -117,7 +123,7 @@ fun LauncherScreen(
         returnToSearch = screen == Screen.Drawer
         autoArmed = false
         keyboard?.hide()
-        if (data[app.restricted] == "on" || hidden) {
+        if (data[app.restricted] == "on" || data[app.protected] == "on" || hidden) {
             selected = app
             screen = Screen.Wait
             model.requestInterruption(app)
@@ -166,7 +172,8 @@ fun LauncherScreen(
     val sole = results.singleOrNull()
     val auto = preferences?.get(autoKey) != "off"
     val automaticApp = sole?.first?.takeIf {
-        sole.second == 0 && preferences?.get(it.restricted) != "on"
+        sole.second == 0 && preferences?.get(it.restricted) != "on" &&
+            preferences?.get(it.protected) != "on"
     }
     LaunchedEffect(screen, query, automaticApp, auto, autoArmed) {
         if (screen == Screen.Drawer && auto && autoArmed && normalized.isNotEmpty() && automaticApp != null) {
@@ -313,6 +320,19 @@ fun LauncherScreen(
                     val restricted = preferences?.get(app.restricted) == "on"
                     Action(if (restricted) "Interrupción activada" else "Interrupción desactivada", tone) {
                         model.save(app.restricted, if (restricted) "off" else "on")
+                    }
+                    if (app.component.packageName != settingsPackage) {
+                        val protected = preferences?.get(app.protected) == "on"
+                        Action(if (protected) "Protección de aperturas externas activada" else "Proteger aperturas externas", tone) {
+                            model.save(app.protected, if (protected) "off" else "on")
+                        }
+                        if (protected && !protectionEnabled) {
+                            BasicText("La protección externa requiere activar el servicio de accesibilidad del launcher. La pausa desde el launcher ya está activa.",
+                                style = tone.copy(fontSize = 14.sp))
+                            Action("Abrir ajustes de accesibilidad", tone) {
+                                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                            }
+                        }
                     }
                     val hidden = preferences?.get(app.hidden) == "on"
                     if (!hidden) {

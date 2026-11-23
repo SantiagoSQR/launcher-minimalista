@@ -29,11 +29,12 @@ import org.json.JSONArray
 import java.text.Normalizer
 import java.util.Locale
 
-private val Application.preferences by preferencesDataStore("launcher")
+internal val Application.preferences by preferencesDataStore("launcher")
 
 data class App(val component: ComponentName, val label: String) {
     val id get() = component.flattenToString()
     val hidden get() = hiddenKey(component.packageName)
+    val protected get() = protectionKey(component.packageName)
     val restricted get() = stringPreferencesKey("restricted:$id")
     val alias get() = stringPreferencesKey("alias:$id")
 }
@@ -215,11 +216,12 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun launch(target: App, attempt: Interruption? = null): Boolean {
-        if (attempt == null) {
-            val data = preferences.value ?: return false
-            if (data[target.hidden] == "on" || data[target.restricted] == "on") return false
-        }
+        val data = preferences.value ?: return false
+        val protected = data[target.protected] == "on"
+        if (attempt == null && (data[target.hidden] == "on" || data[target.restricted] == "on" || protected)) return false
+        if (protected) ForegroundProtection.authorize(target.component.packageName)
         val opened = start(target)
+        if (protected && !opened) ForegroundProtection.revoke()
         record(target, if (opened) "opened" else "failed", attempt)
         return opened
     }
