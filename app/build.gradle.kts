@@ -12,8 +12,8 @@ android {
         applicationId = "com.valen.launcher"
         minSdk = 34
         targetSdk = 37
-        versionCode = 7
-        versionName = "1.0.0-rc6"
+        versionCode = 8
+        versionName = "1.0.0-rc7"
     }
 
     flavorDimensions += "appearance"
