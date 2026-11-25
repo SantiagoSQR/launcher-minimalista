@@ -21,6 +21,16 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.semantics.semantics
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -69,6 +79,9 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
+private val fanKey = stringPreferencesKey("fan-home")
+private val fanHandKey = stringPreferencesKey("fan-hand")
+
 private enum class Screen { Home, Drawer, Settings, Favorites, App, Wait, Progression, HiddenGate, Hidden, LockedGate, Locked, Widgets, Stats }
 
 @Composable
@@ -81,6 +94,8 @@ fun LauncherScreen(
     val usage by model.usage.collectAsState()
     val attempt by model.interruption.collectAsState()
     val preferences by model.preferences.collectAsState()
+    val fan = preferences?.get(fanKey) == "on"
+    val leftHanded = preferences?.get(fanHandKey) == "left"
     val retro = booleanResource(R.bool.retro_style)
     val panel = Color.Black
     val inter = FontFamily(Font(R.font.inter))
@@ -209,9 +224,21 @@ fun LauncherScreen(
         }
     }
 
-    val background = if (screen == Screen.Home) Modifier else Modifier.background(panel)
-    Box(Modifier.fillMaxSize().then(background).safeDrawingPadding().imePadding()) {
-        when (screen) {
+    val tabs = setOf(Screen.Home, Screen.Drawer, Screen.Widgets)
+    AnimatedContent(
+        targetState = screen,
+        transitionSpec = {
+            if (initialState in tabs && targetState in tabs) {
+                val direction = if (targetState == Screen.Home) -1 else 1
+                (fadeIn(tween(155)) + slideInHorizontally(tween(155)) { direction * it / 14 }) togetherWith
+                    (fadeOut(tween(120)) + slideOutHorizontally(tween(120)) { -direction * it / 14 })
+            } else EnterTransition.None togetherWith ExitTransition.None
+        },
+        label = "Pantallas del launcher"
+    ) { displayed ->
+      val background = if (displayed == Screen.Home) Modifier else Modifier.background(panel)
+      Box(Modifier.fillMaxSize().then(background).safeDrawingPadding().imePadding()) {
+        when (displayed) {
             Screen.Home -> {
                 val contextLocale = LocalConfiguration.current.locales[0]
                 var now by remember { mutableStateOf(ZonedDateTime.now()) }
@@ -281,7 +308,7 @@ fun LauncherScreen(
                             }
                             if (!defaultHome) Action(stringResource(R.string.choose_home), tone, action = chooseHome)
                         }
-                        if (visibleFavorites.isNotEmpty()) {
+                        if (!fan && visibleFavorites.isNotEmpty()) {
                             LazyColumn(
                                 Modifier.heightIn(max = favoritesHeight).padding(bottom = 24.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
@@ -289,6 +316,11 @@ fun LauncherScreen(
                                 if (retro) item { Spacer(Modifier.width(144.dp).height(1.dp).background(Color.Gray)) }
                                 items(visibleFavorites, key = { it.id }) { AppRow(title(it), tone.copy(fontWeight = FontWeight.Medium), { open(it) }, { configure(it) }) } }
                         }
+                    }
+                    if (fan) {
+                        FanFavorites(visibleFavorites, ::title, tone, leftHanded,
+                            Modifier.matchParentSize(), favoritesHeight,
+                            ::open, ::configure, { screen = Screen.Drawer })
                     }
                 }
             }
@@ -334,6 +366,12 @@ fun LauncherScreen(
                     }
                     Action("Demoras progresivas", tone) { screen = Screen.Progression }
                     Action("Ordenar favoritos", tone) { screen = Screen.Favorites }
+                    Action(if (fan) "Inicio Fan · volver a clásico" else "Inicio Fan · activar", tone) {
+                        model.save(fanKey, if (fan) "off" else "on")
+                    }
+                    if (fan) Action(if (leftHanded) "Abanico a la izquierda" else "Abanico a la derecha", tone) {
+                        model.save(fanHandKey, if (leftHanded) "right" else "left")
+                    }
                     Action(if (auto) "Apertura automática activada" else "Apertura automática desactivada", tone) {
                         model.save(autoKey, if (auto) "off" else "on")
                     }
@@ -478,6 +516,7 @@ fun LauncherScreen(
                 model.save(favoritesKey, JSONArray(current + favoriteIds.filterNot { id -> favorites.any { app -> app.id == id } }).toString())
             }
         }
+      }
     }
 }
 
