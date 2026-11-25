@@ -59,7 +59,11 @@ fun WaitPanel(label: String, deadline: Long?, style: TextStyle, openingCount: In
             BasicText(
                 when {
                     deadline == null -> "Preparando…"
-                    remaining > 0 -> "${(remaining + 999) / 1000} s"
+                    remaining > 0 -> {
+                        val seconds = (remaining + 999) / 1000
+                        if (seconds >= 60) "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
+                        else "$seconds s"
+                    }
                     else -> "Ya podés continuar"
                 },
                 modifier = if (deadline != null && remaining == 0L) Modifier.semantics {

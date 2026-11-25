@@ -123,7 +123,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
-        if (model.cancelInterruption()) homeRequest++
+        val interrupted = model.cancelInterruption()
+        val blocked = model.cancelBlockedAccess()
+        if (interrupted || blocked) homeRequest++
         super.onPause()
     }
 

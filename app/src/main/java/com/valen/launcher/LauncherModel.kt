@@ -34,6 +34,7 @@ internal val Application.preferences by preferencesDataStore("launcher")
 data class App(val component: ComponentName, val label: String) {
     val id get() = component.flattenToString()
     val hidden get() = hiddenKey(component.packageName)
+    val locked get() = lockedKey(component.packageName)
     val protected get() = protectionKey(component.packageName)
     val restricted get() = stringPreferencesKey("restricted:$id")
     val alias get() = stringPreferencesKey("alias:$id")
@@ -177,7 +178,35 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private var lockDeadline: Long? = null
+    private var blockedAccess = false
+
+    fun beginBlockedAccess(): Long = (android.os.SystemClock.elapsedRealtime() + 600_000L).also {
+        lockDeadline = it
+        blockedAccess = false
+    }
+
+    fun confirmBlockedAccess(): Boolean {
+        val deadline = lockDeadline ?: return false
+        if (android.os.SystemClock.elapsedRealtime() < deadline) return false
+        lockDeadline = null
+        blockedAccess = true
+        return true
+    }
+
+    fun cancelBlockedAccess(): Boolean {
+        val active = lockDeadline != null || blockedAccess
+        lockDeadline = null
+        blockedAccess = false
+        return active
+    }
+
+    fun unlock(target: App) {
+        if (blockedAccess) save(target.locked, "off")
+    }
+
     fun requestInterruption(target: App) {
+        if (preferences.value?.get(target.locked) == "on" && !blockedAccess) return
         lookup?.cancel()
         val delays = preferences.value?.get(progressionKey)?.let(::parseDelays) ?: defaultProgression
         lookup = viewModelScope.launch {
@@ -219,7 +248,14 @@ class LauncherModel(private val app: Application) : AndroidViewModel(app) {
         val data = preferences.value ?: return false
         val protected = data[target.protected] == "on"
         if (attempt == null && (data[target.hidden] == "on" || data[target.restricted] == "on" || protected)) return false
+        val locked = data[target.locked] == "on"
+        if (locked && (!blockedAccess || attempt == null)) return false
+        if (locked) {
+            cancelBlockedAccess()
+            ForegroundProtection.authorize(target.component.packageName)
+        }
         val opened = start(target)
+        if (locked && !opened) ForegroundProtection.revoke()
         record(target, if (opened) "opened" else "failed", attempt)
         return opened
     }

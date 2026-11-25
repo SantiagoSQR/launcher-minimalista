@@ -57,6 +57,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
@@ -68,7 +69,7 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
-private enum class Screen { Home, Drawer, Settings, Favorites, App, Wait, Progression, HiddenGate, Hidden, Widgets, Stats }
+private enum class Screen { Home, Drawer, Settings, Favorites, App, Wait, Progression, HiddenGate, Hidden, LockedGate, Locked, Widgets, Stats }
 
 @Composable
 fun LauncherScreen(
@@ -103,6 +104,7 @@ fun LauncherScreen(
     var appOrigin by remember { mutableStateOf(Screen.Settings) }
     var returnToSearch by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<App?>(null) }
+    var lockDeadline by remember { mutableLongStateOf(0) }
     var hiddenDeadline by remember { mutableLongStateOf(0) }
     var alias by remember { mutableStateOf("") }
     val favoriteIds = remember(preferences) { decodeFavorites(preferences?.get(favoritesKey)) }
@@ -110,18 +112,22 @@ fun LauncherScreen(
         val byId = apps.associateBy { it.id }
         favoriteIds.mapNotNull(byId::get)
     }
+    fun locked(app: App) = preferences?.get(app.locked) == "on"
+    val visibleFavorites = favorites.filterNot(::locked)
     fun title(app: App) = preferences?.get(app.alias)?.ifBlank { app.label } ?: app.label
     fun failed() {
         Toast.makeText(context, "No se pudo abrir la aplicación", Toast.LENGTH_SHORT).show()
     }
     fun cancel() {
         model.cancelInterruption()
+        model.cancelBlockedAccess()
         screen = Screen.Home
         autoArmed = false
         query = ""
     }
     fun dismissWait() {
         model.cancelInterruption()
+        model.cancelBlockedAccess()
         screen = if (returnToSearch) Screen.Drawer else Screen.Home
         autoArmed = false
         if (!returnToSearch) query = ""
@@ -129,11 +135,13 @@ fun LauncherScreen(
     fun open(app: App) {
         val data = preferences ?: return
         val hidden = data[app.hidden] == "on"
-        if (hidden && screen != Screen.Hidden) return
+        val locked = data[app.locked] == "on"
+        if (locked && screen != Screen.Locked) return
+        if (hidden && screen != Screen.Hidden && !locked) return
         returnToSearch = screen == Screen.Drawer
         autoArmed = false
         keyboard?.hide()
-        if (data[app.restricted] == "on" || data[app.protected] == "on" || hidden) {
+        if (data[app.restricted] == "on" || data[app.protected] == "on" || hidden || locked) {
             selected = app
             screen = Screen.Wait
             model.requestInterruption(app)
@@ -156,8 +164,9 @@ fun LauncherScreen(
     BackHandler(screen != Screen.Home) {
         if (screen == Screen.Wait) dismissWait()
         else {
+            model.cancelBlockedAccess()
             screen = when (screen) {
-                Screen.Favorites, Screen.Progression, Screen.HiddenGate, Screen.Hidden -> Screen.Settings
+                Screen.Favorites, Screen.Progression, Screen.HiddenGate, Screen.Hidden, Screen.LockedGate, Screen.Locked -> Screen.Settings
                 Screen.App -> appOrigin
                 Screen.Stats -> if (statsFromSettings) Screen.Settings else Screen.Home
                 else -> Screen.Home
@@ -170,7 +179,7 @@ fun LauncherScreen(
     val normalized = remember(query) { searchKey(query.trim()) }
     val searchIndex = remember(apps, preferences) {
         if (preferences == null) emptyList()
-        else apps.filter { preferences?.get(it.hidden) != "on" }
+        else apps.filter { preferences?.get(it.hidden) != "on" && !locked(it) }
             .map { Triple(it, searchKey(it.label), searchKey(title(it))) }
     }
     val results = remember(normalized, searchIndex) {
@@ -229,6 +238,7 @@ fun LauncherScreen(
                                     if (kotlin.math.abs(horizontal) > kotlin.math.abs(vertical)) {
                                         if (kotlin.math.abs(horizontal) > threshold) screen = Screen.Widgets
                                     } else if (vertical < -threshold) screen = Screen.Drawer
+                                    else if (vertical > threshold) ForegroundProtection.openQuickSettings()
                                 }
                             ) { _, delta -> horizontal += delta.x; vertical += delta.y }
                         },
@@ -271,13 +281,13 @@ fun LauncherScreen(
                             }
                             if (!defaultHome) Action(stringResource(R.string.choose_home), tone, action = chooseHome)
                         }
-                        if (favorites.isNotEmpty()) {
+                        if (visibleFavorites.isNotEmpty()) {
                             LazyColumn(
                                 Modifier.heightIn(max = favoritesHeight).padding(bottom = 24.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 if (retro) item { Spacer(Modifier.width(144.dp).height(1.dp).background(Color.Gray)) }
-                                items(favorites, key = { it.id }) { AppRow(title(it), tone.copy(fontWeight = FontWeight.Medium), { open(it) }, { configure(it) }) } }
+                                items(visibleFavorites, key = { it.id }) { AppRow(title(it), tone.copy(fontWeight = FontWeight.Medium), { open(it) }, { configure(it) }) } }
                         }
                     }
                 }
@@ -314,6 +324,10 @@ fun LauncherScreen(
                         hiddenDeadline = SystemClock.elapsedRealtime() + seconds * 1000L
                         screen = Screen.HiddenGate
                     }
+                    if (apps.any(::locked)) Action("Apps bloqueadas", tone) {
+                        lockDeadline = model.beginBlockedAccess()
+                        screen = Screen.LockedGate
+                    }
                     Action("Estadísticas", tone) {
                         statsFromSettings = true
                         screen = Screen.Stats
@@ -326,7 +340,11 @@ fun LauncherScreen(
                     if (!defaultHome) Action(stringResource(R.string.choose_home), tone, action = chooseHome)
                 }
                 items(apps, key = { it.id }) {
-                    val suffix = if (preferences?.get(it.hidden) == "on") " · oculta" else ""
+                    val suffix = when {
+                        locked(it) -> " · bloqueada"
+                        preferences?.get(it.hidden) == "on" -> " · oculta"
+                        else -> ""
+                    }
                     Action(title(it) + suffix, tone) { configure(it) }
                 }
             }
@@ -345,6 +363,18 @@ fun LauncherScreen(
                         model.save(app.restricted, if (restricted) "off" else "on")
                     }
                     if (app.component.packageName != settingsPackage) {
+                        if (locked(app)) {
+                            BasicText("Para quitar el bloqueo, entrá en Apps bloqueadas.", style = tone)
+                        } else Action("Bloquear app", tone, retroList = retro) {
+                            model.save(app.locked, "on")
+                        }
+                        if (locked(app) && !protectionEnabled) {
+                            BasicText("Para bloquear aperturas externas, activá el servicio de accesibilidad.", style = tone)
+                            Action("Abrir ajustes de accesibilidad", tone, retroList = retro) {
+                                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                            }
+                        }
+
                         val protected = preferences?.get(app.protected) == "on"
                         Action(if (protected) "Protección desde Ajustes activada" else "Proteger aperturas desde Ajustes", tone, retroList = retro) {
                             model.save(app.protected, if (protected) "off" else "on")
@@ -390,9 +420,30 @@ fun LauncherScreen(
             }, cancel = { screen = Screen.Settings })
             Screen.Hidden -> LazyColumn(Modifier.padding(horizontal = 24.dp)) {
                 item { BasicText("Aplicaciones ocultas", style = tone.copy(fontSize = 28.sp)) }
-                val hidden = apps.filter { preferences?.get(it.hidden) == "on" }
+                val hidden = apps.filter { preferences?.get(it.hidden) == "on" && !locked(it) }
                 if (hidden.isEmpty()) item { BasicText("No hay aplicaciones ocultas", style = tone) }
                 items(hidden, key = { it.id }) { Action(title(it), tone) { open(it) } }
+            }
+            Screen.LockedGate -> {
+                val view = LocalView.current
+                DisposableEffect(view) {
+                    val previous = view.keepScreenOn
+                    view.keepScreenOn = true
+                    onDispose { view.keepScreenOn = previous }
+                }
+                WaitPanel("Apps bloqueadas", lockDeadline, tone, confirm = {
+                    if (model.confirmBlockedAccess()) screen = Screen.Locked
+                }, cancel = {
+                    model.cancelBlockedAccess()
+                    screen = Screen.Settings
+                })
+            }
+            Screen.Locked -> LazyColumn(Modifier.padding(horizontal = 24.dp)) {
+                item { BasicText("Apps bloqueadas", style = tone.copy(fontSize = 28.sp)) }
+                items(apps.filter(::locked), key = { it.id }) { app ->
+                    Action(title(app), tone) { open(app) }
+                    Action("Quitar bloqueo de ${title(app)}", tone) { model.unlock(app) }
+                }
             }
             Screen.Wait -> WaitPanel(selected?.let(::title).orEmpty(), attempt?.deadline, tone, attempt?.openingCount, {
                 model.completeInterruption()?.let { opened ->
