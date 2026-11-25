@@ -320,7 +320,7 @@ fun LauncherScreen(
                     if (fan) {
                         FanFavorites(visibleFavorites, ::title, tone, leftHanded,
                             Modifier.matchParentSize(), favoritesHeight,
-                            ::open, ::configure, { screen = Screen.Drawer })
+                            ::open, ::configure, { model.save(fanHandKey, if (leftHanded) "right" else "left") })
                     }
                 }
             }
