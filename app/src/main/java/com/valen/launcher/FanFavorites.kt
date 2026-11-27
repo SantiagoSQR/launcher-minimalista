@@ -14,10 +14,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
@@ -27,55 +29,56 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
-import kotlin.math.abs
-import kotlin.math.roundToInt
 
 private val triggerSize = 56.dp
-private val edgeMargin = 30.dp
-private val nodeSize = 54.dp
+private val nodeSize = 50.dp
 private val labelWidth = 84.dp
 private val labelGap = 8.dp
-private val rowWidth = nodeSize + labelWidth + labelGap
 
-private fun fanSlots(width: Float, anchorY: Float, rowHeight: Float, count: Int, leftHanded: Boolean): List<Offset> {
-    val origin = Offset(width - edgeMargin.value - triggerSize.value / 2, anchorY)
-    val halfNode = nodeSize.value / 2
-    val reachX = minOf(165f, origin.x - rowWidth.value + halfNode - 4f)
-    val reachY = minOf(246f, origin.y - rowHeight / 2 - 4f)
-    if (reachX * .53f < (nodeSize.value + triggerSize.value) / 2 + 5f || reachY < rowHeight) return emptyList()
 
-    val size = minOf(count, 5, ((reachY - 10f) / (rowHeight + 5f)).toInt() + 1)
-    // Start near the thumb and bend inward, then back toward the trigger's side.
-    val inward = listOf(.53f, .87f, 1f, .71f, .31f)
-    val upward = listOf(0f, .23f, .51f, .79f, 1f)
-    val spacing = rowHeight + 5f
-    val slack = reachY - 10f - spacing * (size - 1)
-    return List(size) { index ->
-        val x = origin.x - reachX * inward[index]
-        val rise = 10f + spacing * index + slack * upward[index]
-        Offset(if (leftHanded) width - x else x, origin.y - rise)
+private fun fanSlots(width: Float, height: Float, count: Int, leftHanded: Boolean): List<Offset> {
+    // Centers follow the thumb trace from the user's portrait screenshot.
+    val trace = listOf(Offset(.699f, .49f), Offset(.56f, .526f), Offset(.431f, .58f),
+        Offset(.321f, .648f), Offset(.25f, .722f))
+    if (width < triggerSize.value || height < triggerSize.value) return emptyList()
+    val radius = nodeSize.value / 2
+    for (size in minOf(5, count) downTo 1) {
+        val spots = List(size) { index ->
+            val t = if (size == 1) 4f else 4f * index / (size - 1)
+            val segment = t.toInt().coerceAtMost(3)
+            val point = trace[segment] + (trace[segment + 1] - trace[segment]) * (t - segment)
+            Offset(width * (if (leftHanded) 1f - point.x else point.x), height * point.y)
+        }
+        val last = spots.last()
+        val switch = Offset(width - last.x, last.y)
+        if (spots.all {
+                it.x in radius..(width - radius) && it.y in radius..(height - radius) &&
+                    (it - switch).getDistance() >= radius + triggerSize.value / 2 + 4f
+            } && spots.zipWithNext().all { (first, next) ->
+                (first - next).getDistance() >= nodeSize.value + 2f
+            }
+        ) return spots
     }
+    return emptyList()
 }
 
 @Composable
 internal fun FanFavorites(
     apps: List<App>, title: (App) -> String, style: TextStyle, leftHanded: Boolean,
-    modifier: Modifier, menuHeight: Dp, onOpen: (App) -> Unit, onEdit: (App) -> Unit, onSwitchHand: () -> Unit
+    modifier: Modifier, onOpen: (App) -> Unit, onEdit: (App) -> Unit, onSwitchHand: () -> Unit
 ) {
     BoxWithConstraints(modifier) {
         val haptics = LocalHapticFeedback.current
-        val density = LocalDensity.current
-        val label = style.copy(fontSize = 13.sp, lineHeight = 16.sp, textAlign = if (leftHanded) TextAlign.Start else TextAlign.End)
-        val rowHeight = maxOf(nodeSize, with(density) { label.lineHeight.toDp() } * 2)
-        val lift = minOf(112.dp, menuHeight * .24f)
-        val right = (maxWidth - edgeMargin - triggerSize).coerceAtLeast(0.dp)
-        val triggerX = if (leftHanded) edgeMargin else right
-        val triggerY = (maxHeight - lift - triggerSize).coerceAtLeast(0.dp)
-        val slots = remember(maxWidth, maxHeight, menuHeight, triggerY, rowHeight, apps.size, leftHanded) {
-            val top = (maxHeight - menuHeight).value
-            fanSlots(maxWidth.value, triggerY.value + triggerSize.value / 2 - top, rowHeight.value, apps.size, leftHanded)
-                .map { it.copy(y = it.y + top) }
+        val availableWidth = maxWidth
+        val label = style.copy(fontSize = 13.sp, lineHeight = 16.sp,
+            textAlign = if (leftHanded) TextAlign.End else TextAlign.Start)
+        val slots = remember(maxWidth, maxHeight, apps.size, leftHanded) {
+            fanSlots(maxWidth.value, maxHeight.value, apps.size, leftHanded)
         }
+        if (slots.isEmpty()) return@BoxWithConstraints
+        val last = slots.last()
+        val triggerX = (maxWidth.value - last.x).dp - triggerSize / 2
+        val triggerY = last.y.dp - triggerSize / 2
         var highlighted by remember(slots) { mutableIntStateOf(-1) }
         val latestOpen by rememberUpdatedState(onOpen)
         val switchHand by rememberUpdatedState(onSwitchHand)
@@ -87,12 +90,17 @@ internal fun FanFavorites(
 
         Box(Modifier.fillMaxSize()) {
             Canvas(Modifier.matchParentSize()) {
-                val anchor = Offset((triggerX + triggerSize / 2).toPx(), (triggerY + triggerSize / 2).toPx())
-                slots.forEachIndexed { index, center ->
-                    drawLine(
-                        Color.White.copy(alpha = if (index == highlighted) .85f else .36f),
-                        anchor, Offset(center.x.dp.toPx(), center.y.dp.toPx()), 1.dp.toPx()
-                    )
+                val points = slots.map { Offset(it.x.dp.toPx(), it.y.dp.toPx()) }
+                if (points.size > 1) {
+                    val path = Path().apply {
+                        moveTo(points.first().x, points.first().y)
+                        points.drop(1).dropLast(1).forEachIndexed { index, point ->
+                            val midpoint = (point + points[index + 2]) / 2f
+                            quadraticBezierTo(point.x, point.y, midpoint.x, midpoint.y)
+                        }
+                        lineTo(points.last().x, points.last().y)
+                    }
+                    drawPath(path, Color(0xffa18167).copy(alpha = .56f), style = Stroke(width = 1.dp.toPx()))
                 }
             }
             slots.forEachIndexed { index, center ->
@@ -103,22 +111,18 @@ internal fun FanFavorites(
                     val codePoints = name.codePoints().filter { Character.isLetter(it) }.limit(2).toArray()
                     String(codePoints, 0, codePoints.size).uppercase()
                 }
-                Row(
-                    Modifier.offset {
-                        val left = if (leftHanded) center.x.dp - nodeSize / 2
-                            else center.x.dp + nodeSize / 2 - rowWidth
-                        IntOffset(left.roundToPx(), (center.y.dp - rowHeight / 2).roundToPx())
-                    }.size(rowWidth, rowHeight)
-                        .combinedClickable(role = Role.Button, onLongClickLabel = "Editar aplicación",
-                            onClick = { select(index) }, onLongClick = { select(-1); onEdit(app) }),
-                    horizontalArrangement = Arrangement.spacedBy(labelGap),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (leftHanded) FanNode(letters, selected, style)
-                    BasicText(name, Modifier.width(labelWidth), style = label,
-                        maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    if (!leftHanded) FanNode(letters, selected, style)
-                }
+                val gap = nodeSize / 2 + labelGap
+                val labelRoom = if (leftHanded) center.x.dp - gap else availableWidth - center.x.dp - gap
+                val nameWidth = labelWidth.coerceAtMost(labelRoom.coerceAtLeast(0.dp))
+                val nameX = if (leftHanded) center.x.dp - gap - nameWidth else center.x.dp + gap
+                BasicText(name, Modifier.offset(nameX, center.y.dp - 4.dp).width(nameWidth)
+                    .clearAndSetSemantics {}, style = label, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                FanNode(letters, selected, style, Modifier
+                    .offset(center.x.dp - nodeSize / 2, center.y.dp - nodeSize / 2)
+                    .combinedClickable(role = Role.Button, onLongClickLabel = "Editar aplicación",
+                        onClick = { select(index) }, onLongClick = { select(-1); onEdit(app) })
+                    .semantics { contentDescription = name })
+
             }
         }
 
@@ -126,8 +130,7 @@ internal fun FanFavorites(
             Modifier.offset {
                 IntOffset(triggerX.roundToPx(), triggerY.roundToPx())
             }.size(triggerSize)
-                .background(Color.White, CircleShape)
-                .border(1.dp, Color.White, CircleShape)
+                .background(Color(0xffcfaa85), CircleShape)
                 .semantics {
                     role = Role.Button
                     contentDescription = if (leftHanded) "Cambiar a modo diestro" else "Cambiar a modo zurdo"
@@ -150,9 +153,7 @@ internal fun FanFavorites(
                                     val x = triggerX.value + change.position.x / this.density
                                     val y = triggerY.value + change.position.y / this.density
                                     val next = slots.indexOfFirst {
-                                        val towardLabel = (x - it.x) * if (leftHanded) 1f else -1f
-                                        towardLabel in -nodeSize.value / 2..(rowWidth.value - nodeSize.value / 2) &&
-                                            abs(it.y - y) <= rowHeight.value / 2
+                                        (it - Offset(x, y)).getDistance() <= nodeSize.value / 2
                                     }
                                     if (next != highlighted && next >= 0) {
                                         haptics.performHapticFeedback(HapticFeedbackType.SegmentFrequentTick)
@@ -173,17 +174,17 @@ internal fun FanFavorites(
             contentAlignment = Alignment.Center
         ) {
             BasicText(if (leftHanded) "→" else "←",
-                style = style.copy(color = Color.Black, fontSize = 27.sp))
+                style = style.copy(color = Color(0xff2b1a12), fontSize = 27.sp))
         }
     }
 }
 
 @Composable
-private fun FanNode(letters: String, selected: Boolean, style: TextStyle) {
-    Box(Modifier.size(nodeSize)
-        .background(if (selected) Color.White else Color(0xff202020), CircleShape)
-        .border(1.dp, if (selected) Color.White else Color(0xff878787), CircleShape),
+private fun FanNode(letters: String, selected: Boolean, style: TextStyle, modifier: Modifier) {
+    Box(modifier.size(nodeSize)
+        .background(if (selected) Color(0xffcfaa85) else Color(0xff30241d), CircleShape)
+        .border(1.dp, Color(0xffa18167), CircleShape),
         contentAlignment = Alignment.Center) {
-        BasicText(letters, style = style.copy(color = if (selected) Color.Black else Color.White, fontSize = 16.sp), maxLines = 1)
+        BasicText(letters, style = style.copy(color = if (selected) Color(0xff2b1a12) else style.color, fontSize = 16.sp), maxLines = 1)
     }
 }

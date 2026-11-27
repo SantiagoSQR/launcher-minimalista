@@ -9,7 +9,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.text.BasicText
@@ -46,7 +45,8 @@ fun WaitPanel(label: String, deadline: Long?, style: TextStyle, openingCount: In
     BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 24.dp), contentAlignment = Alignment.Center) {
         val availableHeight = maxHeight
         Column(Modifier.verticalScroll(rememberScrollState()).heightIn(min = availableHeight)
-            .padding(vertical = 24.dp), Arrangement.Center, Alignment.CenterHorizontally) {
+            .padding(top = availableHeight * .23f, bottom = availableHeight * .18f),
+                Arrangement.Top, Alignment.CenterHorizontally) {
             BasicText(label, style = style.copy(fontSize = 28.sp))
             if (openingCount != null) {
                 BasicText(
@@ -71,26 +71,25 @@ fun WaitPanel(label: String, deadline: Long?, style: TextStyle, openingCount: In
                 } else Modifier,
                 style = style.copy(fontFeatureSettings = "tnum")
             )
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(12.dp))
+            Box(Modifier.heightIn(min = 48.dp), contentAlignment = Alignment.Center) {
+                if (deadline != null && remaining == 0L) {
+                    Action("Continuar", style.copy(fontSize = 13.sp)) {
+                        if (SystemClock.elapsedRealtime() >= deadline) confirm()
+                    }
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(16.dp))
             Box(
-                Modifier.widthIn(min = 208.dp).heightIn(min = 64.dp)
-                    .background(Color(0xff176b3a))
+                Modifier.fillMaxWidth().heightIn(min = 68.dp)
+                    .background(Color(0xff83573d), androidx.compose.foundation.shape.RoundedCornerShape(15.dp))
                     .clickable(role = Role.Button, onClick = cancel)
                     .padding(16.dp),
                 contentAlignment = Alignment.Center
             ) {
-                BasicText("Cancelar", style = style.copy(color = Color.White, fontSize = 22.sp))
-            }
-            Spacer(Modifier.height(8.dp))
-            Box(Modifier.heightIn(min = 48.dp), contentAlignment = Alignment.Center) {
-                if (deadline != null && remaining == 0L) {
-                    Action("Continuar", style.copy(fontSize = 14.sp)) {
-                        if (SystemClock.elapsedRealtime() >= deadline) confirm()
-                    }
-                } else {
-                    BasicText("Continuar", Modifier.clearAndSetSemantics {}.padding(vertical = 12.dp).heightIn(min = 24.dp),
-                        style = style.copy(fontSize = 14.sp, color = Color.Transparent))
-                }
+                BasicText("Cancelar", style = style.copy(color = Color(0xfffff4e8), fontSize = 19.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold))
             }
         }
     }

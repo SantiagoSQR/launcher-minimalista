@@ -79,7 +79,6 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
-private val fanKey = stringPreferencesKey("fan-home")
 private val fanHandKey = stringPreferencesKey("fan-hand")
 
 private enum class Screen { Home, Drawer, Settings, Favorites, App, Wait, Progression, HiddenGate, Hidden, LockedGate, Locked, Widgets, Stats }
@@ -94,16 +93,15 @@ fun LauncherScreen(
     val usage by model.usage.collectAsState()
     val attempt by model.interruption.collectAsState()
     val preferences by model.preferences.collectAsState()
-    val fan = preferences?.get(fanKey) == "on"
     val leftHanded = preferences?.get(fanHandKey) == "left"
     val retro = booleanResource(R.bool.retro_style)
-    val panel = Color.Black
+    val panel = Color(0xff15110e)
     val inter = FontFamily(Font(R.font.inter))
     val clockFont = remember(retro) {
         if (retro) FontFamily(Font(R.font.inter, weight = FontWeight.Bold,
             variationSettings = FontVariation.Settings(FontVariation.weight(700)))) else inter
     }
-    val tone = TextStyle(color = Color.White, fontSize = 18.sp, fontFamily = inter)
+    val tone = TextStyle(color = Color(0xfff5eadc), fontSize = 18.sp, fontFamily = inter)
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
     val settingsPackage = remember(context) { context.settingsPackage() }
@@ -195,24 +193,24 @@ fun LauncherScreen(
     val searchIndex = remember(apps, preferences) {
         if (preferences == null) emptyList()
         else apps.filter { preferences?.get(it.hidden) != "on" && !locked(it) }
-            .map { Triple(it, searchKey(it.label), searchKey(title(it))) }
+            .map { it to searchKey(title(it)) }
     }
     val results = remember(normalized, searchIndex) {
-        searchIndex.mapNotNull { (app, original, shown) ->
-            val rank = minOf(matchRank(normalized, original), matchRank(normalized, shown))
+        searchIndex.mapNotNull { (app, shown) ->
+            val rank = matchRank(normalized, shown)
             if (rank == Int.MAX_VALUE) null else app to rank
         }.sortedBy { it.second }
     }
     val sole = results.singleOrNull()
     val auto = preferences?.get(autoKey) != "off"
     val automaticApp = sole?.first?.takeIf {
-        sole.second == 0 && preferences?.get(it.restricted) != "on" &&
+        preferences?.get(it.restricted) != "on" &&
             preferences?.get(it.protected) != "on"
     }
     LaunchedEffect(screen, query, automaticApp, auto, autoArmed) {
         if (screen == Screen.Drawer && auto && autoArmed && normalized.isNotEmpty() && automaticApp != null) {
             lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-                delay(500)
+                delay(250)
                 open(automaticApp)
             }
         }
@@ -252,7 +250,7 @@ fun LauncherScreen(
                         }
                     }
                 }
-                BoxWithConstraints(
+                Box(
                     Modifier.fillMaxSize()
                         .pointerInput(Unit) { detectTapGestures(onLongPress = { screen = Screen.Settings }) }
                         .pointerInput(Unit) {
@@ -271,7 +269,6 @@ fun LauncherScreen(
                         },
                     contentAlignment = Alignment.TopCenter
                 ) {
-                    val favoritesHeight = maxHeight * 0.55f
                     Column(
                         Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween,
                         horizontalAlignment = Alignment.CenterHorizontally
@@ -294,10 +291,9 @@ fun LauncherScreen(
                                 )
                             )
                             val date = now.format(DateTimeFormatter.ofLocalizedDate(
-                                if (retro) FormatStyle.MEDIUM else FormatStyle.FULL
+                                FormatStyle.FULL
                             ).withLocale(contextLocale))
-                            BasicText(if (retro) date.uppercase(contextLocale) else date,
-                                style = if (retro) tone.copy(fontSize = 14.sp, letterSpacing = 1.sp) else tone)
+                            BasicText(date, style = tone.copy(fontSize = 16.sp))
                             val openings = dailyActivity.filter { it.day == day.toString() }.sumOf { it.openings }
                             val estimate = usage?.get(day.toString())?.let(::usageText)
                             val count = if (openings == 1) "1 apertura" else "$openings aperturas"
@@ -308,26 +304,16 @@ fun LauncherScreen(
                             }
                             if (!defaultHome) Action(stringResource(R.string.choose_home), tone, action = chooseHome)
                         }
-                        if (!fan && visibleFavorites.isNotEmpty()) {
-                            LazyColumn(
-                                Modifier.heightIn(max = favoritesHeight).padding(bottom = 24.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                if (retro) item { Spacer(Modifier.width(144.dp).height(1.dp).background(Color.Gray)) }
-                                items(visibleFavorites, key = { it.id }) { AppRow(title(it), tone.copy(fontWeight = FontWeight.Medium), { open(it) }, { configure(it) }) } }
-                        }
                     }
-                    if (fan) {
-                        FanFavorites(visibleFavorites, ::title, tone, leftHanded,
-                            Modifier.matchParentSize(), favoritesHeight,
-                            ::open, ::configure, { model.save(fanHandKey, if (leftHanded) "right" else "left") })
-                    }
+                    FanFavorites(visibleFavorites, ::title, tone, leftHanded,
+                        Modifier.matchParentSize(),
+                        ::open, ::configure, { model.save(fanHandKey, if (leftHanded) "right" else "left") })
                 }
             }
             Screen.Drawer -> Column(Modifier.padding(horizontal = 24.dp)) {
-                if (retro) RetroHeading("Aplicaciones", tone)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f)) {
+                    Box(Modifier.weight(1f).background(Color(0xff30251e),
+                        androidx.compose.foundation.shape.RoundedCornerShape(14.dp)).padding(horizontal = 12.dp)) {
                         Input(query, { query = it; autoArmed = true }, "Buscar aplicaciones", tone,
                             Modifier.focusRequester(focus), onOpen = { sole?.first?.let(::open) })
                     }
@@ -366,12 +352,6 @@ fun LauncherScreen(
                     }
                     Action("Demoras progresivas", tone) { screen = Screen.Progression }
                     Action("Ordenar favoritos", tone) { screen = Screen.Favorites }
-                    Action(if (fan) "Inicio Fan · volver a clásico" else "Inicio Fan · activar", tone) {
-                        model.save(fanKey, if (fan) "off" else "on")
-                    }
-                    if (fan) Action(if (leftHanded) "Abanico a la izquierda" else "Abanico a la derecha", tone) {
-                        model.save(fanHandKey, if (leftHanded) "right" else "left")
-                    }
                     Action(if (auto) "Apertura automática activada" else "Apertura automática desactivada", tone) {
                         model.save(autoKey, if (auto) "off" else "on")
                     }
@@ -593,12 +573,12 @@ private fun RetroHeading(label: String, style: TextStyle) {
 private fun AppRow(label: String, style: TextStyle, open: () -> Unit, edit: () -> Unit, retroList: Boolean = false) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val row = if (retroList) Modifier.fillMaxWidth().background(if (pressed) Color.White else Color.Transparent) else Modifier
+    val row = if (retroList) Modifier.fillMaxWidth().background(if (pressed) Color(0xff473124) else Color.Transparent) else Modifier
     Box(row.combinedClickable(interactionSource = interaction, indication = if (retroList) null else androidx.compose.foundation.LocalIndication.current,
         role = Role.Button, onClick = open, onLongClickLabel = "Editar aplicación", onLongClick = edit)
         .sizeIn(minWidth = 48.dp, minHeight = 48.dp).padding(horizontal = 8.dp, vertical = 10.dp),
         contentAlignment = Alignment.CenterStart
-    ) { BasicText(label, style = if (retroList && pressed) style.copy(color = Color.Black) else style) }
+    ) { BasicText(label, style = style) }
 }
 
 @Composable
@@ -606,10 +586,10 @@ internal fun Action(label: String, style: TextStyle, retroList: Boolean = false,
     if (retroList) {
         val interaction = remember { MutableInteractionSource() }
         val pressed by interaction.collectIsPressedAsState()
-        BasicText(label, Modifier.fillMaxWidth().background(if (pressed) Color.White else Color.Transparent)
+        BasicText(label, Modifier.fillMaxWidth().background(if (pressed) Color(0xff473124) else Color.Transparent)
             .clickable(interactionSource = interaction, indication = null, role = Role.Button, onClick = action)
             .padding(vertical = 12.dp, horizontal = 8.dp).heightIn(min = 24.dp),
-            style = if (pressed) style.copy(color = Color.Black) else style)
+            style = style)
         return
     }
     BasicText(label, Modifier.clickable(role = Role.Button, onClick = action).padding(vertical = 12.dp, horizontal = 8.dp)
