@@ -24,6 +24,9 @@ data class LaunchEvent(
 @Dao
 interface HistoryDao {
     @Insert suspend fun record(event: LaunchEvent)
+    @Insert suspend fun recordAll(events: List<LaunchEvent>)
+    @Query("SELECT * FROM LaunchEvent ORDER BY timestamp") suspend fun all(): List<LaunchEvent>
+    @Query("DELETE FROM LaunchEvent") suspend fun clear()
 
     @Query("""
         SELECT day, appId, MAX(label) AS label,

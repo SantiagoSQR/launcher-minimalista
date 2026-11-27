@@ -1,9 +1,10 @@
 <resources>
-    <bool name="retro_style">false</bool>
     <item name="widget_size" type="id" />
     <style name="Theme.Launcher" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:windowShowWallpaper">true</item>
         <item name="android:windowBackground">@android:color/transparent</item>
+        <!-- Lets Window.setBackgroundBlurRadius blur the wallpaper behind the widgets page. -->
+        <item name="android:windowIsTranslucent">true</item>
     </style>
     <string name="app_name">Launcher minimalista</string>
     <string name="choose_home">Seleccionar launcher predeterminado</string>

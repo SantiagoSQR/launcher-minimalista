@@ -1,5 +1,0 @@
-<resources>
-    <string name="app_name">Launcher Retro</string>
-    <string name="protection_name">Protección de aperturas de Launcher Retro</string>
-    <bool name="retro_style">true</bool>
-</resources>

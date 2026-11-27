@@ -12,6 +12,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
@@ -98,7 +100,20 @@ internal fun WidgetPanel(model: LauncherModel, activity: MainActivity, style: Te
                     }
                 }
                 if (widgets.isEmpty()) BasicText("Todavía no hay widgets", style = style)
-                Box(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                // Only scroll the grid when it overflows: an always-on vertical scroll steals the drags
+                // that scrollable widgets (calendar agendas, lists) need.
+                val scroll = rememberScrollState()
+                Box(Modifier.fillMaxWidth().verticalScroll(scroll, enabled = scroll.maxValue > 0)
+                    .pointerInput(Unit) {
+                        // Watch (never consume) touches so the host re-arms its update channel after
+                        // each interaction; see LauncherModel.refreshWidgetUpdates.
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                if (event.changes.any { !it.pressed && it.previousPressed }) model.refreshWidgetUpdates()
+                            }
+                        }
+                    }) {
                     val lastRow = widgets.maxOfOrNull { it.y + it.rows } ?: 0
                     Box(Modifier.fillMaxWidth().height(widgetRowDp.dp * lastRow)) {
                         for (widget in widgets) {
@@ -115,7 +130,11 @@ internal fun WidgetPanel(model: LauncherModel, activity: MainActivity, style: Te
                                         }
                                     } else {
                                         AndroidView(
-                                            factory = { model.widgetHost.createView(it, widget.id, info) },
+                                            factory = {
+                                                model.widgetHost.createView(it, widget.id, info).apply {
+                                                    setExecutor(model.widgetExecutor)
+                                                }
+                                            },
                                             modifier = Modifier.fillMaxSize(),
                                             update = { view ->
                                                 val sizes = listOf(SizeF(width.value, height.value))

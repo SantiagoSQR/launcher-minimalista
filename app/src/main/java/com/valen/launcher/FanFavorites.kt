@@ -29,6 +29,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.*
 
 private val triggerSize = 56.dp
@@ -69,7 +71,10 @@ internal fun FanFavorites(
     modifier: Modifier, position: Offset, onMove: (Offset) -> Unit, onOpen: (App) -> Unit, onEdit: (App) -> Unit, onSwitchHand: () -> Unit
 ) {
     BoxWithConstraints(modifier) {
+        val palette = LocalPalette.current
         val haptics = LocalHapticFeedback.current
+        val measurer = rememberTextMeasurer()
+        val screenDensity = LocalDensity.current
         val availableWidth = maxWidth
         val label = style.copy(fontSize = 13.sp, lineHeight = 16.sp,
             textAlign = if (leftHanded) TextAlign.End else TextAlign.Start)
@@ -117,7 +122,49 @@ internal fun FanFavorites(
                         }
                         lineTo(points.last().x, points.last().y)
                     }
-                    drawPath(path, Color(0xffa18167).copy(alpha = .56f), style = Stroke(width = 1.dp.toPx()))
+                    drawPath(path, palette.line.copy(alpha = .56f), style = Stroke(width = 1.dp.toPx()))
+                }
+            }
+            // Names sit beside their circle, centered on it. Two-line names can reach the neighbor's, so
+            // measure them and nudge overlapping pairs apart vertically until they clear each other.
+            val gap = nodeSize / 2 + labelGap
+            val labelBoxes = slots.mapIndexed { index, slot ->
+                val center = slot + offset
+                val labelRoom = if (leftHanded) center.x.dp - gap else availableWidth - center.x.dp - gap
+                val nameWidth = labelWidth.coerceAtMost(labelRoom.coerceAtLeast(0.dp))
+                val nameX = if (leftHanded) center.x.dp - gap - nameWidth else center.x.dp + gap
+                val measured = measurer.measure(title(apps[index]), label, overflow = TextOverflow.Ellipsis, maxLines = 2,
+                    constraints = Constraints(maxWidth = with(screenDensity) { nameWidth.roundToPx() }.coerceAtLeast(0)))
+                val textHeight = with(screenDensity) { measured.size.height.toDp() }
+                floatArrayOf(nameX.value, nameWidth.value, center.y - textHeight.value / 2f, textHeight.value)
+            }
+            val nodeReach = radius + 3f
+            repeat(8) {
+                // Keep every name off the other circles: push it away from the circle it overlaps.
+                labelBoxes.forEachIndexed { i, box ->
+                    slots.forEachIndexed { j, slot ->
+                        if (i == j) return@forEachIndexed
+                        val node = slot + offset
+                        val besides = box[0] < node.x + nodeReach && node.x - nodeReach < box[0] + box[1]
+                        if (!besides) return@forEachIndexed
+                        val top = node.y - nodeReach
+                        val bottom = node.y + nodeReach
+                        if (box[2] < bottom && top < box[2] + box[3]) {
+                            if (box[2] + box[3] / 2f >= node.y) box[2] = bottom else box[2] = top - box[3]
+                        }
+                    }
+                }
+                for (a in labelBoxes.indices) for (b in a + 1 until labelBoxes.size) {
+                    val first = labelBoxes[a]
+                    val second = labelBoxes[b]
+                    val sideBySide = first[0] < second[0] + second[1] && second[0] < first[0] + first[1]
+                    val upper = if (first[2] <= second[2]) first else second
+                    val lower = if (upper === first) second else first
+                    val overlap = upper[2] + upper[3] + 3f - lower[2]
+                    if (sideBySide && overlap > 0f) {
+                        upper[2] -= overlap / 2f
+                        lower[2] += overlap / 2f
+                    }
                 }
             }
             slots.forEachIndexed { index, slot ->
@@ -129,11 +176,8 @@ internal fun FanFavorites(
                     val codePoints = name.codePoints().filter { Character.isLetter(it) }.limit(2).toArray()
                     String(codePoints, 0, codePoints.size).uppercase()
                 }
-                val gap = nodeSize / 2 + labelGap
-                val labelRoom = if (leftHanded) center.x.dp - gap else availableWidth - center.x.dp - gap
-                val nameWidth = labelWidth.coerceAtMost(labelRoom.coerceAtLeast(0.dp))
-                val nameX = if (leftHanded) center.x.dp - gap - nameWidth else center.x.dp + gap
-                BasicText(name, Modifier.offset(nameX, center.y.dp - 4.dp).width(nameWidth)
+                val (nameX, nameWidth, nameTop) = labelBoxes[index]
+                BasicText(name, Modifier.offset(nameX.dp, nameTop.dp).width(nameWidth.dp)
                     .clearAndSetSemantics {}, style = label, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 FanNode(letters, selected, style, Modifier
                     .offset(center.x.dp - nodeSize / 2, center.y.dp - nodeSize / 2)
@@ -148,7 +192,7 @@ internal fun FanFavorites(
             Modifier.offset {
                 IntOffset(triggerX.roundToPx(), triggerY.roundToPx())
             }.size(triggerSize)
-                .background(Color(0xffcfaa85), CircleShape)
+                .background(palette.accent, CircleShape)
                 .semantics {
                     role = Role.Button
                     contentDescription = if (leftHanded) "Cambiar a modo diestro" else "Cambiar a modo zurdo"
@@ -213,17 +257,18 @@ internal fun FanFavorites(
             contentAlignment = Alignment.Center
         ) {
             BasicText(if (leftHanded) "→" else "←",
-                style = style.copy(color = Color(0xff2b1a12), fontSize = 27.sp))
+                style = style.copy(color = palette.onAccent, fontSize = 27.sp))
         }
     }
 }
 
 @Composable
 private fun FanNode(letters: String, selected: Boolean, style: TextStyle, modifier: Modifier) {
+    val palette = LocalPalette.current
     Box(modifier.size(nodeSize)
-        .background(if (selected) Color(0xffcfaa85) else Color(0xff30241d), CircleShape)
-        .border(1.dp, Color(0xffa18167), CircleShape),
+        .background(if (selected) palette.accent else palette.raised, CircleShape)
+        .border(1.dp, palette.line, CircleShape),
         contentAlignment = Alignment.Center) {
-        BasicText(letters, style = style.copy(color = if (selected) Color(0xff2b1a12) else style.color, fontSize = 16.sp), maxLines = 1)
+        BasicText(letters, style = style.copy(color = if (selected) palette.onAccent else style.color, fontSize = 16.sp), maxLines = 1)
     }
 }

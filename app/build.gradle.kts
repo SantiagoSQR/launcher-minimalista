@@ -12,17 +12,18 @@ android {
         applicationId = "com.valen.launcher"
         minSdk = 34
         targetSdk = 37
-        versionCode = 11
-        versionName = "1.0.0-rc10"
+        versionCode = 13
+        versionName = "1.1.0"
     }
 
-    flavorDimensions += "appearance"
-    productFlavors {
-        create("classic") { dimension = "appearance" }
-        create("retro") {
-            dimension = "appearance"
-            applicationIdSuffix = ".retro"
-            versionNameSuffix = "-retro"
+    buildTypes {
+        release {
+            // Compose debug builds are noticeably slower; this is the build to use day to day.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            // Signed with this computer's debug key so it installs over the debug build and keeps its data.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -32,6 +33,9 @@ android {
 }
 
 ksp { arg("room.schemaLocation", file("schemas").path) }
+
+// APKs come out as launcher-minimalista-debug.apk / launcher-minimalista-release.apk.
+base { archivesName.set("launcher-minimalista") }
 
 dependencies {
     implementation("androidx.activity:activity-compose:1.13.0")

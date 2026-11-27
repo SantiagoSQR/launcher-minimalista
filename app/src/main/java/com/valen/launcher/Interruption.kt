@@ -83,12 +83,12 @@ fun WaitPanel(label: String, deadline: Long?, style: TextStyle, openingCount: In
             Spacer(Modifier.height(16.dp))
             Box(
                 Modifier.fillMaxWidth().heightIn(min = 68.dp)
-                    .background(Color(0xff83573d), androidx.compose.foundation.shape.RoundedCornerShape(15.dp))
+                    .background(LocalPalette.current.strong, androidx.compose.foundation.shape.RoundedCornerShape(15.dp))
                     .clickable(role = Role.Button, onClick = cancel)
                     .padding(16.dp),
                 contentAlignment = Alignment.Center
             ) {
-                BasicText("Cancelar", style = style.copy(color = Color(0xfffff4e8), fontSize = 19.sp,
+                BasicText("Cancelar", style = style.copy(color = LocalPalette.current.onStrong, fontSize = 19.sp,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold))
             }
         }

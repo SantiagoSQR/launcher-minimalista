@@ -2,3 +2,10 @@
 .kotlin/
 **/build/
 local.properties
+*.hprof
+*.apk
+*.aab
+.idea/
+*.iml
+.DS_Store
+work/
