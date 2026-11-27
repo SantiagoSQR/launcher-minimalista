@@ -28,7 +28,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.compose.foundation.background
@@ -62,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
@@ -79,6 +82,7 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
+private val fanPositionKey = stringPreferencesKey("fan-position")
 private val fanHandKey = stringPreferencesKey("fan-hand")
 
 private enum class Screen { Home, Drawer, Settings, Favorites, App, Wait, Progression, HiddenGate, Hidden, LockedGate, Locked, Widgets, Stats }
@@ -94,6 +98,11 @@ fun LauncherScreen(
     val attempt by model.interruption.collectAsState()
     val preferences by model.preferences.collectAsState()
     val leftHanded = preferences?.get(fanHandKey) == "left"
+    val fanPosition = remember(preferences?.get(fanPositionKey)) {
+        val parts = preferences?.get(fanPositionKey)?.split(',')
+        fun coordinate(index: Int) = parts?.getOrNull(index)?.toFloatOrNull()?.takeIf { it.isFinite() } ?: 0f
+        Offset(coordinate(0), coordinate(1))
+    }
     val retro = booleanResource(R.bool.retro_style)
     val panel = Color(0xff15110e)
     val inter = FontFamily(Font(R.font.inter))
@@ -111,6 +120,7 @@ fun LauncherScreen(
     }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var screen by remember { mutableStateOf(Screen.Home) }
+    var widgetsSide by remember { mutableIntStateOf(1) }
     var statsFromSettings by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var autoArmed by remember { mutableStateOf(false) }
@@ -222,15 +232,24 @@ fun LauncherScreen(
         }
     }
 
-    val tabs = setOf(Screen.Home, Screen.Drawer, Screen.Widgets)
     AnimatedContent(
         targetState = screen,
         transitionSpec = {
-            if (initialState in tabs && targetState in tabs) {
-                val direction = if (targetState == Screen.Home) -1 else 1
-                (fadeIn(tween(155)) + slideInHorizontally(tween(155)) { direction * it / 14 }) togetherWith
-                    (fadeOut(tween(120)) + slideOutHorizontally(tween(120)) { -direction * it / 14 })
-            } else EnterTransition.None togetherWith ExitTransition.None
+            when {
+                (initialState == Screen.Home && targetState == Screen.Drawer) ||
+                    (initialState == Screen.Drawer && targetState == Screen.Home) -> {
+                    val direction = if (targetState == Screen.Drawer) 1 else -1
+                    (fadeIn(tween(155)) + slideInVertically(tween(155)) { direction * it / 14 }) togetherWith
+                        (fadeOut(tween(120)) + slideOutVertically(tween(120)) { -direction * it / 14 })
+                }
+                (initialState == Screen.Home && targetState == Screen.Widgets) ||
+                    (initialState == Screen.Widgets && targetState == Screen.Home) -> {
+                    val direction = if (targetState == Screen.Widgets) widgetsSide else -widgetsSide
+                    (fadeIn(tween(155)) + slideInHorizontally(tween(155)) { direction * it / 14 }) togetherWith
+                        (fadeOut(tween(120)) + slideOutHorizontally(tween(120)) { -direction * it / 14 })
+                }
+                else -> EnterTransition.None togetherWith ExitTransition.None
+            }
         },
         label = "Pantallas del launcher"
     ) { displayed ->
@@ -261,7 +280,10 @@ fun LauncherScreen(
                                 onDragEnd = {
                                     val threshold = 56.dp.toPx()
                                     if (kotlin.math.abs(horizontal) > kotlin.math.abs(vertical)) {
-                                        if (kotlin.math.abs(horizontal) > threshold) screen = Screen.Widgets
+                                        if (kotlin.math.abs(horizontal) > threshold) {
+                                            widgetsSide = if (horizontal < 0f) 1 else -1
+                                            screen = Screen.Widgets
+                                        }
                                     } else if (vertical < -threshold) screen = Screen.Drawer
                                     else if (vertical > threshold) ForegroundProtection.openQuickSettings()
                                 }
@@ -280,7 +302,11 @@ fun LauncherScreen(
                                     customActions = listOf(
                                         CustomAccessibilityAction("Abrir aplicaciones") { screen = Screen.Drawer; true },
                                         CustomAccessibilityAction("Abrir ajustes") { screen = Screen.Settings; true },
-                                        CustomAccessibilityAction("Abrir widgets") { screen = Screen.Widgets; true }
+                                        CustomAccessibilityAction("Abrir widgets") {
+                                            widgetsSide = 1
+                                            screen = Screen.Widgets
+                                            true
+                                        }
                                     )
                                 },
                                 style = tone.copy(
@@ -306,7 +332,8 @@ fun LauncherScreen(
                         }
                     }
                     FanFavorites(visibleFavorites, ::title, tone, leftHanded,
-                        Modifier.matchParentSize(),
+                        Modifier.matchParentSize(), fanPosition,
+                        { model.save(fanPositionKey, "${it.x},${it.y}") },
                         ::open, ::configure, { model.save(fanHandKey, if (leftHanded) "right" else "left") })
                 }
             }

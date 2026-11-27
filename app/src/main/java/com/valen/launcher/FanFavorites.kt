@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.Role
@@ -65,20 +66,36 @@ private fun fanSlots(width: Float, height: Float, count: Int, leftHanded: Boolea
 @Composable
 internal fun FanFavorites(
     apps: List<App>, title: (App) -> String, style: TextStyle, leftHanded: Boolean,
-    modifier: Modifier, onOpen: (App) -> Unit, onEdit: (App) -> Unit, onSwitchHand: () -> Unit
+    modifier: Modifier, position: Offset, onMove: (Offset) -> Unit, onOpen: (App) -> Unit, onEdit: (App) -> Unit, onSwitchHand: () -> Unit
 ) {
     BoxWithConstraints(modifier) {
         val haptics = LocalHapticFeedback.current
         val availableWidth = maxWidth
         val label = style.copy(fontSize = 13.sp, lineHeight = 16.sp,
             textAlign = if (leftHanded) TextAlign.End else TextAlign.Start)
-        val slots = remember(maxWidth, maxHeight, apps.size, leftHanded) {
-            fanSlots(maxWidth.value, maxHeight.value, apps.size, leftHanded)
+        val width = maxWidth.value
+        val height = maxHeight.value
+        val slots = remember(width, height, apps.size, leftHanded) {
+            fanSlots(width, height, apps.size, leftHanded)
         }
         if (slots.isEmpty()) return@BoxWithConstraints
         val last = slots.last()
-        val triggerX = (maxWidth.value - last.x).dp - triggerSize / 2
-        val triggerY = last.y.dp - triggerSize / 2
+        val trigger = Offset(width - last.x, last.y)
+        val halfTrigger = triggerSize.value / 2
+        val radius = nodeSize.value / 2
+        val minX = maxOf(radius - slots.minOf { it.x }, halfTrigger - trigger.x)
+        val maxX = minOf(width - radius - slots.maxOf { it.x }, width - halfTrigger - trigger.x)
+        val minY = maxOf(radius - slots.minOf { it.y }, halfTrigger - trigger.y)
+        val maxY = minOf(height - radius - slots.maxOf { it.y }, height - halfTrigger - trigger.y)
+        fun constrain(offset: Offset) = Offset(offset.x.coerceIn(minX, maxX), offset.y.coerceIn(minY, maxY))
+
+        val direction = if (leftHanded) -1f else 1f
+        val savedOffset = constrain(Offset(position.x * width * direction, position.y * height))
+        var dragOffset by remember(slots, height, savedOffset) { mutableStateOf<Offset?>(null) }
+        val offset = dragOffset ?: savedOffset
+        val triggerX = (trigger.x + offset.x).dp - triggerSize / 2
+        val triggerY = (trigger.y + offset.y).dp - triggerSize / 2
+        val savePosition by rememberUpdatedState(onMove)
         var highlighted by remember(slots) { mutableIntStateOf(-1) }
         val latestOpen by rememberUpdatedState(onOpen)
         val switchHand by rememberUpdatedState(onSwitchHand)
@@ -90,7 +107,7 @@ internal fun FanFavorites(
 
         Box(Modifier.fillMaxSize()) {
             Canvas(Modifier.matchParentSize()) {
-                val points = slots.map { Offset(it.x.dp.toPx(), it.y.dp.toPx()) }
+                val points = slots.map { it + offset }.map { Offset(it.x.dp.toPx(), it.y.dp.toPx()) }
                 if (points.size > 1) {
                     val path = Path().apply {
                         moveTo(points.first().x, points.first().y)
@@ -103,7 +120,8 @@ internal fun FanFavorites(
                     drawPath(path, Color(0xffa18167).copy(alpha = .56f), style = Stroke(width = 1.dp.toPx()))
                 }
             }
-            slots.forEachIndexed { index, center ->
+            slots.forEachIndexed { index, slot ->
+                val center = slot + offset
                 val app = apps[index]
                 val selected = index == highlighted
                 val name = title(app)
@@ -136,38 +154,59 @@ internal fun FanFavorites(
                     contentDescription = if (leftHanded) "Cambiar a modo diestro" else "Cambiar a modo zurdo"
                     onClick { switchHand(); true }
                 }
-                .pointerInput(apps, slots, triggerX, triggerY) {
+                .pointerInput(apps, slots, savedOffset, width, height, leftHanded) {
                     awaitEachGesture {
                         val down = awaitFirstDown()
                         down.consume()
                         var dragged = false
+                        var moving = false
+                        var committed = false
                         try {
                             while (true) {
                                 val event = awaitPointerEvent()
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
                                 if (change.isConsumed) break
-                                if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop && !dragged) {
-                                    dragged = true
+                                if (!dragged && !moving &&
+                                    change.uptimeMillis - down.uptimeMillis >= viewConfiguration.longPressTimeoutMillis
+                                ) {
+                                    moving = true
+                                    dragOffset = savedOffset
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                 }
-                                if (dragged) {
-                                    val x = triggerX.value + change.position.x / this.density
-                                    val y = triggerY.value + change.position.y / this.density
-                                    val next = slots.indexOfFirst {
-                                        (it - Offset(x, y)).getDistance() <= nodeSize.value / 2
+                                if (moving) {
+                                    dragOffset = constrain((dragOffset ?: savedOffset) + change.positionChange() / density)
+                                } else {
+                                    if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) {
+                                        dragged = true
                                     }
-                                    if (next != highlighted && next >= 0) {
-                                        haptics.performHapticFeedback(HapticFeedbackType.SegmentFrequentTick)
+                                    if (dragged) {
+                                        val point = trigger + savedOffset - Offset(halfTrigger, halfTrigger) +
+                                            change.position / density
+                                        val next = slots.indexOfFirst {
+                                            (it + savedOffset - point).getDistance() <= radius
+                                        }
+                                        if (next != highlighted && next >= 0) {
+                                            haptics.performHapticFeedback(HapticFeedbackType.SegmentFrequentTick)
+                                        }
+                                        highlighted = next
                                     }
-                                    highlighted = next
                                 }
                                 change.consume()
                                 if (!change.pressed) {
-                                    if (dragged) select(highlighted) else switchHand()
+                                    when {
+                                        moving -> dragOffset?.let {
+                                            committed = true
+                                            savePosition(Offset(it.x / width * direction, it.y / height))
+                                        }
+                                        dragged -> select(highlighted)
+                                        else -> switchHand()
+                                    }
                                     break
                                 }
                             }
                         } finally {
-                            if (dragged) select(-1)
+                            if (!committed) dragOffset = null
+                            highlighted = -1
                         }
                     }
                 },
