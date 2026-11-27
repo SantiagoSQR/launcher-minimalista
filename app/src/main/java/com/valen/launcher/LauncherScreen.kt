@@ -232,6 +232,19 @@ private fun LauncherContent(
         alias = preferences?.get(app.alias).orEmpty()
         screen = Screen.App
     }
+    fun lockScreen() {
+        if (!ForegroundProtection.lockScreen()) Toast.makeText(context,
+            "Para apagar la pantalla con doble toque, activá el servicio de accesibilidad del launcher",
+            Toast.LENGTH_LONG).show()
+    }
+    fun openAlarms() {
+        try {
+            context.startActivity(Intent(android.provider.AlarmClock.ACTION_SHOW_ALARMS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(context, "No hay una app de reloj para abrir", Toast.LENGTH_SHORT).show()
+        }
+    }
     fun closeSearch() {
         screen = Screen.Home
         query = ""
@@ -408,7 +421,8 @@ private fun LauncherContent(
                     openDrawer = { screen = Screen.Drawer },
                     openWidgets = { screen = Screen.Widgets },
                     openStats = { statsFromSettings = false; screen = Screen.Stats },
-                    open = ::open, configure = ::configure
+                    open = ::open, configure = ::configure,
+                    lockScreen = ::lockScreen, openAlarms = ::openAlarms
                 )
             }
             // Widgets: the wallpaper shows through, blurred behind a light tint of the theme. Kept
@@ -420,7 +434,7 @@ private fun LauncherContent(
                     .safeDrawingPadding()
                     .then(if (widgetsShown || screen == Screen.Widgets) Modifier else Modifier.clearAndSetSemantics {})
             ) {
-                WidgetPanel(model, activity, tone, pickWidget)
+                WidgetPanel(model, activity, tone, pickWidget, ::lockScreen)
             }
             // App search: a sheet that follows the finger up from the bottom and back down.
             if (searchShown || screen == Screen.Drawer) {
@@ -782,6 +796,7 @@ private fun HomePage(
     dailyActivity: List<DailyActivity>, usage: Map<String, Long>?,
     openSettings: () -> Unit, openDrawer: () -> Unit, openWidgets: () -> Unit, openStats: () -> Unit,
     open: (App) -> Unit, configure: (App) -> Unit,
+    lockScreen: () -> Unit, openAlarms: () -> Unit,
 ) {
     val contextLocale = LocalConfiguration.current.locales[0]
     var now by remember { mutableStateOf(ZonedDateTime.now()) }
@@ -796,7 +811,11 @@ private fun HomePage(
         }
     }
     BoxWithConstraints(
-        Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onLongPress = { openSettings() }) },
+        // Long press opens the settings; double tap on empty space turns the screen off. Taps on
+        // favorites, the clock and other buttons are consumed by them and never reach this.
+        Modifier.fillMaxSize().pointerInput(Unit) {
+            detectTapGestures(onLongPress = { openSettings() }, onDoubleTap = { lockScreen() })
+        },
         contentAlignment = Alignment.TopCenter
     ) {
         val favoritesHeight = maxHeight * 0.55f
@@ -807,7 +826,8 @@ private fun HomePage(
             Column(Modifier.padding(top = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 BasicText(
                     android.text.format.DateFormat.getTimeFormat(context).format(Date.from(now.toInstant())),
-                    modifier = Modifier.semantics {
+                    // Tapping the clock opens the alarms of the system clock app.
+                    modifier = Modifier.clickable(onClickLabel = "Abrir alarmas", onClick = openAlarms).semantics {
                         customActions = listOf(
                             CustomAccessibilityAction("Abrir aplicaciones") { openDrawer(); true },
                             CustomAccessibilityAction("Abrir ajustes") { openSettings(); true },
@@ -1000,6 +1020,8 @@ private fun HelpPanel(style: TextStyle) {
             "Deslizá hacia los costados" to "Pasa a los widgets. Seguí en la misma dirección para volver al inicio, como si dieras la vuelta.",
             "Deslizá hacia abajo" to "Abre los ajustes rápidos de Android (requiere activar el servicio de accesibilidad del launcher).",
             "Mantené presionado el fondo" to "Abre estos ajustes.",
+            "Doble toque en un espacio vacío" to "Apaga la pantalla (también en los widgets, fuera de los widgets). Requiere activar el servicio de accesibilidad del launcher.",
+            "Tocá la hora" to "Abre las alarmas de la app de reloj.",
             "Tocá el resumen de aperturas" to "Abre las estadísticas.",
             "Gesto de volver" to "Desde cualquier pantalla, regresa al inicio.",
         ),

@@ -126,6 +126,9 @@ internal class ForegroundProtection : AccessibilityService() {
             session = null
         }
 
+        /** Turns the screen off like the power button. False when the accessibility service is off. */
+        fun lockScreen(): Boolean = service?.performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN) == true
+
         fun openQuickSettings() {
             service?.performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
         }

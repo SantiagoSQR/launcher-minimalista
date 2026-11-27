@@ -12,6 +12,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -71,11 +74,28 @@ internal fun widgetBounds(info: AppWidgetProviderInfo, cellWidth: Float, density
 }
 
 @Composable
-internal fun WidgetPanel(model: LauncherModel, activity: MainActivity, style: TextStyle, pick: (Float) -> Unit) {
+internal fun WidgetPanel(
+    model: LauncherModel, activity: MainActivity, style: TextStyle, pick: (Float) -> Unit, lockScreen: () -> Unit
+) {
     val widgets by model.widgets.collectAsState()
     var editing by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Int?>(null) }
-    Column(Modifier.fillMaxSize()) {
+    // Double tap on empty space turns the screen off. Buttons consume their taps, but hosted widgets
+    // only see touches after this panel, so taps that land on a widget are filtered out by its bounds.
+    // Plain holders, not state: they are only read when a double tap happens.
+    val panel = remember { arrayOfNulls<LayoutCoordinates>(1) }
+    val widgetAreas = remember { mutableMapOf<Int, LayoutCoordinates>() }
+    val latestEditing by rememberUpdatedState(editing)
+    val latestLock by rememberUpdatedState(lockScreen)
+    Column(Modifier.fillMaxSize().onGloballyPositioned { panel[0] = it }.pointerInput(Unit) {
+        detectTapGestures(onDoubleTap = { position ->
+            val root = panel[0] ?: return@detectTapGestures
+            val onWidget = widgetAreas.values.any { area ->
+                area.isAttached && root.localBoundingBoxOf(area).contains(position)
+            }
+            if (!latestEditing && !onWidget) latestLock()
+        })
+    }) {
         Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             BasicText("Widgets", Modifier.weight(1f), style = style)
             Action(if (editing) "Listo" else "Editar", style) {
@@ -121,7 +141,9 @@ internal fun WidgetPanel(model: LauncherModel, activity: MainActivity, style: Te
                             key(widget.id) {
                                 val width = columnWidth * widget.columns
                                 val height = widgetRowDp.dp * widget.rows
-                                Box(Modifier.offset(columnWidth * widget.x, widgetRowDp.dp * widget.y).size(width, height)) {
+                                DisposableEffect(widget.id) { onDispose { widgetAreas.remove(widget.id) } }
+                                Box(Modifier.offset(columnWidth * widget.x, widgetRowDp.dp * widget.y).size(width, height)
+                                    .onGloballyPositioned { widgetAreas[widget.id] = it }) {
                                     if (editing) {
                                         val border = style.color.copy(alpha = if (selected == widget.id) 1f else .35f)
                                         Box(Modifier.fillMaxSize().padding(2.dp).border(1.dp, border)
