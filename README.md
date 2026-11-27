@@ -44,3 +44,11 @@ La versión `release` se firma con la clave de debug de cada computadora. Un APK
 - Valen ([@valenpf](https://github.com/valenpf)): autor original.
 - Santiago ([@SantiagoSQR](https://github.com/SantiagoSQR)).
 - Tipografía [Inter](https://github.com/rsms/inter), bajo SIL Open Font License 1.1 (`app/src/main/assets/licenses/inter.txt`).
+
+## Licencia
+
+Copyright © 2026 Valen ([@valenpf](https://github.com/valenpf)) y Santiago ([@SantiagoSQR](https://github.com/SantiagoSQR)).
+
+Este programa es software libre: podés redistribuirlo y modificarlo bajo los términos de la [GNU General Public License versión 3](LICENSE), o (a tu elección) cualquier versión posterior. Si publicás una versión modificada, tiene que estar bajo la misma licencia y con su código fuente disponible.
+
+Se distribuye con la esperanza de que sea útil, pero SIN NINGUNA GARANTÍA. Ver el archivo [LICENSE](LICENSE) para más detalles.
